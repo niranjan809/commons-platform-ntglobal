@@ -94,8 +94,22 @@ async function createZohoMeeting(topic, userToken) {
   const token = userToken || process.env.ZOHO_ACCESS_TOKEN;
   if (!token) return null;
   try {
+    // Step 1: get organizer key
+    const orgRes = await axios.get('https://meeting.zoho.in/api/v1/organizers.json', {
+      headers: { Authorization: 'Zoho-oauthtoken ' + token }
+    });
+    console.log('Organizer response:', JSON.stringify(orgRes.data).substring(0, 300));
+    const orgData = orgRes.data;
+    const orgKey = orgData && (
+      orgData.organizer_key || orgData.organizerKey ||
+      (Array.isArray(orgData) && orgData[0] && (orgData[0].organizer_key || orgData[0].organizerKey)) ||
+      (orgData.data && orgData.data.organizer_key)
+    );
+    if (!orgKey) { console.error('No organizer key in response:', JSON.stringify(orgData).substring(0, 200)); return null; }
+
+    // Step 2: create meeting/session
     const res = await axios.post(
-      'https://meeting.zoho.in/api/v1/sessions.json',
+      'https://meeting.zoho.in/api/v1/' + orgKey + '/sessions.json',
       { session: { topic: topic || 'Office Huddle', type: 1 } },
       { headers: { Authorization: 'Zoho-oauthtoken ' + token, 'Content-Type': 'application/json' } }
     );
@@ -103,7 +117,7 @@ async function createZohoMeeting(topic, userToken) {
     const m = res.data && (res.data.session || res.data);
     return (m && (m.join_url || m.joinUrl || m.joinlink || m.joinLink || m.join_link)) || null;
   } catch (e) {
-    console.error('Zoho Meeting error:', e.message, JSON.stringify(e.response && e.response.data));
+    console.error('Zoho Meeting error:', e.message, JSON.stringify(e.response && e.response.data).substring(0, 300));
     return null;
   }
 }
