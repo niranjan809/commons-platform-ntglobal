@@ -12,6 +12,30 @@ const io = new Server(server, { cors: { origin: '*' } });
 
 app.use(cors());
 app.use(express.json());
+
+// OAuth callback — exchanges Zoho auth code for tokens
+app.get('/', async (req, res, next) => {
+  if (req.query.code) {
+    try {
+      const tokenRes = await axios.post('https://accounts.zoho.in/oauth/v2/token', null, {
+        params: {
+          grant_type: 'authorization_code',
+          client_id: process.env.ZOHO_CLIENT_ID,
+          client_secret: process.env.ZOHO_CLIENT_SECRET,
+          redirect_uri: 'https://commons-platform-ntglobal-production.up.railway.app',
+          code: req.query.code
+        }
+      });
+      console.log('ZOHO_TOKENS:', JSON.stringify(tokenRes.data));
+      return res.send('<pre style="font-size:16px;padding:20px">' + JSON.stringify(tokenRes.data, null, 2) + '</pre>');
+    } catch (e) {
+      console.error('Token exchange error:', e.message, e.response && e.response.data);
+      return res.send('<pre>' + JSON.stringify((e.response && e.response.data) || e.message) + '</pre>');
+    }
+  }
+  next();
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 const users = new Map();
@@ -107,9 +131,9 @@ io.on('connection', (socket) => {
           io.to(socket.id).emit('proximity:meet', { with: other, meetLink });
           io.to(other.id).emit('proximity:meet', { with: user, meetLink });
           if (user.slackUsername) postSlackMessage(user.slackUsername,
-            'You are near *' + other.name + '* in the office — Zoho huddle: ' + meetLink);
+            'You are near *' + other.name + '* in the office. Zoho huddle: ' + meetLink);
           if (other.slackUsername) postSlackMessage(other.slackUsername,
-            'You are near *' + user.name + '* in the office — Zoho huddle: ' + meetLink);
+            'You are near *' + user.name + '* in the office. Zoho huddle: ' + meetLink);
         });
       }
     }
@@ -197,5 +221,5 @@ app.get('/api/users', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log('\n🌿 Commons Platform running at http://localhost:' + PORT + '\n');
+  console.log('Commons Platform running at http://localhost:' + PORT);
 });
