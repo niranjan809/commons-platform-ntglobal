@@ -384,3 +384,30 @@ body {
 ::-webkit-scrollbar { width: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--green-pale); border-radius: 10px; }
+
+/* ─── Zoho Login ──────────────────────────────────────────────────────── */
+.btn-zoho {
+  display: flex; align-items: center; justify-content: center;
+  width: 100%; padding: 12px; margin-top: 8px;
+  background: #E42527; color: white;
+  border: none; border-radius: var(--radius-sm);
+  font-family: inherit; font-size: 16px; font-weight: 700;
+  cursor: pointer; text-decoration: none;
+  transition: background .2s, transform .1s;
+}
+.btn-zoho:hover { background: #c41e20; }
+.btn-zoho:active { transform: scale(0.98); }
+.zoho-badge {
+  margin-top: 10px; padding: 8px 14px;
+  background: #e8f5e9; border-radius: var(--radius-sm);
+  color: #2e7d32; font-size: 14px; font-weight: 600;
+  text-align: center;
+}
+.divider {
+  display: flex; align-items: center;
+  margin: 18px 0 10px; color: #aaa; font-size: 13px;
+}
+.divider::before, .divider::after {
+  content: ''; flex: 1; height: 1px; background: #ddd;
+}
+.divider span { padding: 0 10px; }
