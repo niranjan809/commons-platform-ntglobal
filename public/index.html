@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Commons — Virtual Office</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="/socket.io/socket.io.js"></script>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<!--  JOIN SCREEN                                                           -->
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<div id="join-screen" class="join-overlay">
+  <div class="join-card">
+    <div class="join-logo">🌿</div>
+    <h1>Commons</h1>
+    <p class="join-sub">Your team's virtual meadow</p>
+
+    <div class="form-group">
+      <label>Your name</label>
+      <input id="join-name" type="text" placeholder="e.g. Niran" autocomplete="off" />
+    </div>
+    <div class="form-group">
+      <label>Role</label>
+      <input id="join-role" type="text" placeholder="e.g. Product Manager" autocomplete="off" />
+    </div>
+    <div class="form-group">
+      <label>Team</label>
+      <input id="join-team" type="text" placeholder="e.g. Growth" autocomplete="off" />
+    </div>
+    <div class="form-group">
+      <label>Pick an avatar</label>
+      <div class="avatar-picker" id="avatar-picker">
+        <span class="av-opt selected" data-av="🐱">🐱</span>
+        <span class="av-opt" data-av="🐶">🐶</span>
+        <span class="av-opt" data-av="🦊">🦊</span>
+        <span class="av-opt" data-av="🐺">🐺</span>
+        <span class="av-opt" data-av="🐻">🐻</span>
+        <span class="av-opt" data-av="🦁">🦁</span>
+        <span class="av-opt" data-av="🐸">🐸</span>
+        <span class="av-opt" data-av="🐼">🐼</span>
+        <span class="av-opt" data-av="🐨">🐨</span>
+        <span class="av-opt" data-av="🦝">🦝</span>
+        <span class="av-opt" data-av="🐙">🐙</span>
+        <span class="av-opt" data-av="🦋">🦋</span>
+      </div>
+    </div>
+    <button id="join-btn" class="btn-primary">Enter the meadow →</button>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<!--  MAIN APP                                                              -->
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<div id="app" class="app hidden">
+
+  <!-- Left sidebar: member list -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <span class="sidebar-logo">🌿 Commons</span>
+    </div>
+
+    <!-- Status selector -->
+    <div class="status-bar" id="status-bar">
+      <div class="status-self" id="status-self">
+        <span id="self-avatar-label">🐱</span>
+        <span id="self-name-label">You</span>
+        <span class="dot dot-available" id="self-dot"></span>
+      </div>
+      <div class="status-controls">
+        <select id="status-select" class="status-select">
+          <option value="available">🟢 Available</option>
+          <option value="busy">🔴 Busy</option>
+          <option value="break">⏸ Break</option>
+          <option value="offline">⚫ Away</option>
+        </select>
+      </div>
+
+      <!-- Break composer (shows when "Break" is selected) -->
+      <div id="break-composer" class="break-composer hidden">
+        <select id="break-type" class="break-type-select">
+          <option value="lunch">🍱 Lunch</option>
+          <option value="coffee">☕ Coffee</option>
+          <option value="brb">🚶 BRB</option>
+          <option value="focus">🎧 Focus</option>
+          <option value="call">📞 Call</option>
+        </select>
+        <label class="back-label">Back in</label>
+        <select id="break-minutes" class="break-minutes-select">
+          <option value="15">15 min</option>
+          <option value="30">30 min</option>
+          <option value="45">45 min</option>
+          <option value="60">1 hour</option>
+          <option value="90">1.5 hours</option>
+        </select>
+        <button id="break-confirm-btn" class="btn-sm btn-primary">Set</button>
+      </div>
+    </div>
+
+    <!-- Members -->
+    <div class="section-label">Team</div>
+    <ul class="member-list" id="member-list"></ul>
+
+    <!-- Quick Meet button -->
+    <div class="sidebar-footer">
+      <button class="btn-meet" id="quick-meet-btn">📹 Start Zoho Meeting</button>
+    </div>
+  </aside>
+
+  <!-- Canvas meadow -->
+  <main class="meadow-container">
+    <canvas id="meadow-canvas"></canvas>
+
+    <!-- Proximity toast -->
+    <div id="proximity-toast" class="proximity-toast hidden">
+      <div class="toast-inner">
+        <span id="toast-avatar"></span>
+        <div>
+          <div id="toast-name"></div>
+          <a id="toast-meet-link" href="#" target="_blank" class="toast-join">Join Meet →</a>
+        </div>
+        <button class="toast-close" onclick="dismissToast()">✕</button>
+      </div>
+    </div>
+  </main>
+
+  <!-- Right panel: chat -->
+  <aside class="chat-panel" id="chat-panel">
+    <div class="chat-header">
+      <span class="chat-title"># <span id="chat-channel-name">general</span></span>
+      <div class="chat-channels">
+        <button class="ch-btn active" data-ch="general"># general</button>
+        <button class="ch-btn" data-ch="random"># random</button>
+        <button class="ch-btn" data-ch="team"># team</button>
+      </div>
+    </div>
+    <div class="chat-messages" id="chat-messages"></div>
+    <div class="chat-compose">
+      <input id="chat-input" type="text" placeholder="Message #general…" autocomplete="off" />
+      <button id="chat-send-btn" class="btn-send">↑</button>
+    </div>
+  </aside>
+
+</div>
+
+<!-- Profile popover -->
+<div id="profile-popover" class="profile-popover hidden">
+  <button class="popover-close" id="popover-close-btn">✕</button>
+  <div class="popover-avatar" id="pop-avatar"></div>
+  <div class="popover-name" id="pop-name"></div>
+  <div class="popover-role" id="pop-role"></div>
+  <div class="popover-status" id="pop-status"></div>
+  <div class="popover-team" id="pop-team"></div>
+  <div class="popover-activity" id="pop-activity"></div>
+  <div class="popover-links" id="pop-links"></div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
