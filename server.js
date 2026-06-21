@@ -88,14 +88,15 @@ async function createZohoMeeting(topic, userToken) {
       return null;
     }
 
-    const now = new Date();
+    // Server is UTC; Zoho interprets startTime as IST. Add IST offset (+5:30) + 3min buffer.
+    const now = new Date(Date.now() + (5 * 60 + 30) * 60000 + 3 * 60000);
     const pad = n => String(n).padStart(2, '0');
     const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    const h24 = now.getHours();
+    const h24 = now.getUTCHours();
     const ampm = h24 >= 12 ? 'PM' : 'AM';
     const h12 = h24 % 12 || 12;
-    const startTime = months[now.getMonth()] + ' ' + pad(now.getDate()) + ', ' + now.getFullYear() +
-      ' ' + pad(h12) + ':' + pad(now.getMinutes()) + ' ' + ampm;
+    const startTime = months[now.getUTCMonth()] + ' ' + pad(now.getUTCDate()) + ', ' + now.getUTCFullYear() +
+      ' ' + pad(h12) + ':' + pad(now.getUTCMinutes()) + ' ' + ampm;
 
     const presenter = presenterZuid || process.env.ZOHO_PRESENTER_ZUIDD || null;
     const sessionPayload = { session: {
