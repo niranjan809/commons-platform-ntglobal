@@ -91,8 +91,11 @@ async function createZohoMeeting(topic, userToken) {
     const now = new Date();
     const pad = n => String(n).padStart(2, '0');
     const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const h24 = now.getHours();
+    const ampm = h24 >= 12 ? 'PM' : 'AM';
+    const h12 = h24 % 12 || 12;
     const startTime = months[now.getMonth()] + ' ' + pad(now.getDate()) + ', ' + now.getFullYear() +
-      ' ' + pad(now.getHours()) + ':' + pad(now.getMinutes()) + ' IST';
+      ' ' + pad(h12) + ':' + pad(now.getMinutes()) + ' ' + ampm;
 
     const sessionPayload = { session: {
       topic: topic || 'Office Huddle',
