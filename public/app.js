@@ -385,3 +385,121 @@ function getCountdown(isoString) {
 function escHtml(str) {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
+function escRegex(s) {
+  var chars = ['.', '+', '*', '?', '^', '$', '{', '}', '(', ')', '|', '[', ']', '\\'];
+  return s.split('').map(function(c) { return chars.indexOf(c) >= 0 ? '\\' + c : c; }).join('');
+}
+
+function refreshChatView() {
+  chatMessages.innerHTML = '';
+  var msgs = state.chatHistory[state.currentChannel] || [];
+  var q = state.searchQuery;
+  var filtered = q ? msgs.filter(function(m) { return m.text && m.text.toLowerCase().indexOf(q.toLowerCase()) >= 0; }) : msgs;
+  document.getElementById('chat-no-results').classList.toggle('hidden', !q || filtered.length > 0);
+  for (var i = 0; i < filtered.length; i++) renderChatMsg(filtered[i], q || null);
+}
+
+var chatSearchEl = document.getElementById('chat-search');
+var chatSearchClear = document.getElementById('chat-search-clear');
+chatSearchEl.addEventListener('input', function() {
+  state.searchQuery = chatSearchEl.value.trim();
+  chatSearchClear.classList.toggle('hidden', !state.searchQuery);
+  refreshChatView();
+});
+chatSearchClear.addEventListener('click', function() {
+  chatSearchEl.value = ''; state.searchQuery = '';
+  chatSearchClear.classList.add('hidden');
+  refreshChatView();
+});
+
+var breakMinsSelect = document.getElementById('break-minutes');
+var breakCustomInput = document.getElementById('break-custom-mins');
+var breakReturnDisplay = document.getElementById('break-return-display');
+var breakReturnTimeEl = document.getElementById('break-return-time');
+var breakCancelBtn = document.getElementById('break-cancel-btn');
+
+breakMinsSelect.addEventListener('change', function() {
+  breakCustomInput.classList.toggle('hidden', breakMinsSelect.value !== 'custom');
+});
+
+document.getElementById('break-confirm-btn').addEventListener('click', function() {
+  var type = document.getElementById('break-type').value;
+  var mins = parseInt(breakMinsSelect.value, 10);
+  if (breakMinsSelect.value === 'custom') {
+    mins = parseInt(breakCustomInput.value, 10);
+    if (!mins || mins < 1) { breakCustomInput.focus(); return; }
+  }
+  var returnAt = new Date(Date.now() + mins * 60000).toISOString();
+  emitStatus('break', type, returnAt);
+  var retTime = new Date(returnAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  breakReturnTimeEl.textContent = retTime;
+  breakReturnDisplay.classList.remove('hidden');
+});
+
+breakCancelBtn.addEventListener('click', function() {
+  emitStatus('available', null, null);
+  document.getElementById('status-select').value = 'available';
+  breakComposer.classList.add('hidden');
+  breakReturnDisplay.classList.add('hidden');
+});
+
+setInterval(function() {
+  if (state.me && state.me.status === 'break' && state.me.breakReturnAt) {
+    if (new Date(state.me.breakReturnAt) <= new Date()) {
+      emitStatus('available', null, null);
+      document.getElementById('status-select').value = 'available';
+      breakComposer.classList.add('hidden');
+      breakReturnDisplay.classList.add('hidden');
+      addSystemMsg('⏰ Your break is over — you\'re back as Available');
+    }
+  }
+}, 10000);
+
+document.getElementById('admin-open-btn').addEventListener('click', function() { document.getElementById('admin-modal').classList.remove('hidden'); });
+document.getElementById('admin-close').addEventListener('click', function() { document.getElementById('admin-modal').classList.add('hidden'); });
+
+var adminPwd = '';
+document.getElementById('admin-login-btn').addEventListener('click', fetchAttendance);
+document.getElementById('admin-pwd-input').addEventListener('keydown', function(e) { if (e.key === 'Enter') fetchAttendance(); });
+document.getElementById('admin-refresh-btn').addEventListener('click', fetchAttendance);
+
+async function fetchAttendance() {
+  adminPwd = document.getElementById('admin-pwd-input').value || adminPwd;
+  try {
+    var res = await fetch('/api/admin/attendance?pwd=' + encodeURIComponent(adminPwd));
+    if (res.status === 401) { alert('Wrong password'); return; }
+    var data = await res.json();
+    document.getElementById('admin-auth').classList.add('hidden');
+    document.getElementById('admin-content').classList.remove('hidden');
+    document.getElementById('admin-count').textContent = data.count + ' events';
+    renderAttendanceTable(data.log);
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+function renderAttendanceTable(log) {
+  var tbody = document.getElementById('admin-tbody');
+  tbody.innerHTML = '';
+  var eventLabel = { join: '🟢 Joined', leave: '🔴 Left', break: '⏸ Break', available: '🟢 Available', busy: '🔴 Busy', offline: '⚫ Away' };
+  for (var i = 0; i < log.length; i++) {
+    var e = log[i];
+    var tr = document.createElement('tr');
+    var t = new Date(e.ts).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' });
+    var details = '';
+    if (e.breakType) details = e.breakType + (e.breakReturnAt ? ' → back at ' + new Date(e.breakReturnAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '');
+    tr.innerHTML = '<td>' + t + '</td><td>' + escHtml(e.avatar + ' ' + e.userName) + '</td><td>' + escHtml(e.role||'') + '</td><td>' + (eventLabel[e.type]||e.type) + '</td><td>' + escHtml(details) + '</td>';
+    tbody.appendChild(tr);
+  }
+}
+
+document.getElementById('admin-csv-btn').addEventListener('click', function() {
+  var rows = [['Time','User','Role','Event','Details']];
+  document.getElementById('admin-tbody').querySelectorAll('tr').forEach(function(tr) {
+    rows.push(Array.from(tr.cells).map(function(c) { return '"' + c.textContent.replace(/"/g,'""') + '"'; }));
+  });
+  var csv = rows.map(function(r) { return r.join(','); }).join('\n');
+  var a = document.createElement('a');
+  a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+  a.download = 'commons-attendance-' + new Date().toISOString().slice(0,10) + '.csv';
+  a.click();
+});
+
