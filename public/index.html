@@ -102,9 +102,16 @@
           <option value="30">30 min</option>
           <option value="45">45 min</option>
           <option value="60">1 hour</option>
-          <option value="90">1.5 hours</option>
+          <option value="90">1.5 hrs</option>
+          <option value="custom">Custom…</option>
         </select>
+        <input id="break-custom-mins" type="number" min="1" max="480" placeholder="min"
+               class="break-custom-input hidden" />
         <button id="break-confirm-btn" class="btn-sm btn-primary">Set</button>
+        <div id="break-return-display" class="break-return-display hidden">
+          Back at <span id="break-return-time"></span>
+          <button id="break-cancel-btn" class="btn-sm btn-danger">Cancel</button>
+        </div>
       </div>
     </div>
 
@@ -112,9 +119,10 @@
     <div class="section-label">Team</div>
     <ul class="member-list" id="member-list"></ul>
 
-    <!-- Quick Meet button -->
+    <!-- Quick Meet + Admin -->
     <div class="sidebar-footer">
       <button class="btn-meet" id="quick-meet-btn">📹 Start Zoho Meeting</button>
+      <button class="btn-admin" id="admin-open-btn" title="Superuser: Attendance Log">📋</button>
     </div>
   </aside>
 
@@ -144,13 +152,47 @@
         <button class="ch-btn" data-ch="random"># random</button>
         <button class="ch-btn" data-ch="team"># team</button>
       </div>
+      <div class="chat-search-bar">
+        <input id="chat-search" type="text" placeholder="🔍 Search messages…" autocomplete="off" />
+        <button id="chat-search-clear" class="btn-search-clear hidden">✕</button>
+      </div>
     </div>
     <div class="chat-messages" id="chat-messages"></div>
+    <div id="chat-no-results" class="chat-no-results hidden">No messages match your search.</div>
     <div class="chat-compose">
       <input id="chat-input" type="text" placeholder="Message #general…" autocomplete="off" />
       <button id="chat-send-btn" class="btn-send">↑</button>
     </div>
   </aside>
+
+  <!-- Admin panel modal -->
+  <div id="admin-modal" class="admin-modal hidden">
+    <div class="admin-inner">
+      <div class="admin-header">
+        <span>📋 Attendance Log</span>
+        <button id="admin-close" class="popover-close">✕</button>
+      </div>
+      <div id="admin-auth" class="admin-auth">
+        <input id="admin-pwd-input" type="password" placeholder="Admin password" />
+        <button id="admin-login-btn" class="btn-sm btn-primary">View Logs</button>
+      </div>
+      <div id="admin-content" class="hidden">
+        <div class="admin-toolbar">
+          <span id="admin-count"></span>
+          <button id="admin-csv-btn" class="btn-sm btn-secondary">⬇ Export CSV</button>
+          <button id="admin-refresh-btn" class="btn-sm btn-secondary">↺ Refresh</button>
+        </div>
+        <div class="admin-table-wrap">
+          <table id="admin-table" class="admin-table">
+            <thead><tr>
+              <th>Time</th><th>User</th><th>Role</th><th>Event</th><th>Details</th>
+            </tr></thead>
+            <tbody id="admin-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
 
 </div>
 
