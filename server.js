@@ -94,34 +94,73 @@ async function createZohoMeeting(topic, userToken) {
   const token = userToken || process.env.ZOHO_ACCESS_TOKEN;
   if (!token) return null;
   try {
-    // Step 1: get organizer key
-    const orgRes = await axios.get('https://meeting.zoho.in/api/v1/organizers.json', {
-      headers: { Authorization: 'Zoho-oauthtoken ' + token }
-    });
-    console.log('Organizer response:', JSON.stringify(orgRes.data).substring(0, 300));
-    const orgData = orgRes.data;
-    const orgKey = orgData && (
-      orgData.organizer_key || orgData.organizerKey ||
-      (Array.isArray(orgData) && orgData[0] && (orgData[0].organizer_key || orgData[0].organizerKey)) ||
-      (orgData.data && orgData.data.organizer_key)
-    );
-    if (!orgKey) { console.error('No organizer key in response:', JSON.stringify(orgData).substring(0, 200)); return null; }
+    // Step 1: get zsoid (Zoho Org ID) and user ZUID from accounts userinfo
+    let zsoid = null, presenterZuid = null;
+    try {
+      const infoRes = await axios.get('https://accounts.zoho.in/oauth/v2/userinfo', {
+        headers: { Authorization: 'Zoho-oauthtoken ' + token }
+      });
+      console.log('Userinfo:', JSON.stringify(infoRes.data).substring(0, 200));
+      const d = infoRes.data;
+      zsoid = d.ZSOID || d.zsoid || d.org_id;
+      presenterZuid = d.ZUID || d.sub || d.userId || d.id;
+    } catch (ie) {
+      console.error('Userinfo failed:', ie.message, JSON.stringify(ie.response && ie.response.data).substring(0, 150));
+    }
 
-    // Step 2: create meeting/session
+    // Step 2: fallback — try Zoho Meeting self-info endpoint
+    if (!zsoid) {
+      try {
+        const mRes = await axios.get('https://meeting.zoho.in/meeting/api/v2/users/selfinfo.json', {
+          headers: { Authorization: 'Zoho-oauthtoken ' + token }
+        });
+        console.log('Meeting selfinfo:', JSON.stringify(mRes.data).substring(0, 200));
+        const d2 = mRes.data;
+        zsoid = d2.zsoid || d2.ZSOID || (d2.user && d2.user.zsoid);
+        presenterZuid = presenterZuid || d2.userId || d2.ZUID || (d2.user && d2.user.userId);
+      } catch (me) {
+        console.error('Meeting selfinfo failed:', me.message, JSON.stringify(me.response && me.response.data).substring(0, 150));
+      }
+    }
+
+    if (!zsoid) {
+      console.error('No zsoid found — cannot create Zoho Meeting');
+      return null;
+    }
+
+    // Step 3: create meeting via v2 API with JSONString form param
+    const now = new Date();
+    const pad = n => String(n).padStart(2, '0');
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const startTime = months[now.getMonth()] + ' ' + pad(now.getDate()) + ', ' + now.getFullYear() +
+      ' ' + pad(now.getHours()) + ':' + pad(now.getMinutes()) + ' IST';
+
+    const sessionPayload = {
+      session: {
+        topic: topic || 'Office Huddle',
+        presenter: presenterZuid,
+        startTime: startTime,
+        duration: 3600000,
+        timezone: 'Asia/Calcutta'
+      }
+    };
+
     const res = await axios.post(
-      'https://meeting.zoho.in/api/v1/' + orgKey + '/sessions.json',
-      { session: { topic: topic || 'Office Huddle', type: 1 } },
-      { headers: { Authorization: 'Zoho-oauthtoken ' + token, 'Content-Type': 'application/json' } }
+      'https://meeting.zoho.in/api/v2/' + zsoid + '/sessions.json',
+      'JSONString=' + encodeURIComponent(JSON.stringify(sessionPayload)),
+      { headers: {
+          Authorization: 'Zoho-oauthtoken ' + token,
+          'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'
+      }}
     );
     console.log('Zoho Meeting response:', JSON.stringify(res.data).substring(0, 300));
     const m = res.data && (res.data.session || res.data);
-    return (m && (m.join_url || m.joinUrl || m.joinlink || m.joinLink || m.join_link)) || null;
+    return (m && (m.joinLink || m.join_url || m.joinUrl || m.joinlink || m.join_link)) || null;
   } catch (e) {
     console.error('Zoho Meeting error:', e.message, JSON.stringify(e.response && e.response.data).substring(0, 300));
     return null;
   }
 }
-
 async function postSlackMessage(channel, text) {
   if (!process.env.SLACK_BOT_TOKEN) return;
   try {
