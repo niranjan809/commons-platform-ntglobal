@@ -305,7 +305,7 @@ app.get('/api/users', (req, res) => {
   res.json(getUsersArray());
 });
 
-const REDIRECT_URI = (process.env.BASE_URL || 'https://commons-platform-ntglobal-production.up.railway.app') + '/';
+const REDIRECT_URI = process.env.BASE_URL || 'https://commons-platform-ntglobal-production.up.railway.app';
 
 app.get('/auth/zoho', (req, res) => {
   const params = new URLSearchParams({
