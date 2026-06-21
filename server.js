@@ -19,6 +19,26 @@ const users = new Map();
 const PROXIMITY_RADIUS = 80;
 const huddles = new Map();
 
+// ── Attendance log ────────────────────────────────────────────────────────────
+const attendanceLog = [];
+function logAttendance(type, user, extra = {}) {
+  attendanceLog.push({
+    type, userId: user.id, userName: user.name,
+    avatar: user.avatar || '🐱', role: user.role || '',
+    ts: new Date().toISOString(), ...extra
+  });
+  if (attendanceLog.length > 10000) attendanceLog.shift();
+}
+
+// ── Chat history (per channel, last 500 msgs) ─────────────────────────────────
+const chatHistory = { general: [], random: [], team: [] };
+function storeChatMsg(msg) {
+  const ch = msg.channel || 'general';
+  if (!chatHistory[ch]) chatHistory[ch] = [];
+  chatHistory[ch].push(msg);
+  if (chatHistory[ch].length > 500) chatHistory[ch].shift();
+}
+
 function getUsersArray() {
   return Array.from(users.values()).map(u => ({ ...u, socketId: undefined, zohoToken: undefined }));
 }
@@ -167,7 +187,12 @@ io.on('connection', (socket) => {
       activity: '', team: data.team || ''
     };
     users.set(socket.id, user);
+    logAttendance('join', user);
     socket.emit('init', { you: user, users: getUsersArray() });
+    // Send chat history for each channel
+    for (const [ch, msgs] of Object.entries(chatHistory)) {
+      if (msgs.length) socket.emit('chat:history', { channel: ch, messages: msgs });
+    }
     socket.broadcast.emit('user:joined', user);
     console.log(user.name + ' joined' + (user.zohoToken ? ' (Zoho SSO)' : ''));
   });
@@ -220,6 +245,7 @@ io.on('connection', (socket) => {
     user.status = data.status;
     user.breakType = data.breakType || null;
     user.breakReturnAt = data.breakReturnAt || null;
+    logAttendance(data.status, user, data.breakType ? { breakType: data.breakType, breakReturnAt: data.breakReturnAt } : {});
     io.emit('user:status', { id: socket.id, status: user.status, breakType: user.breakType, breakReturnAt: user.breakReturnAt });
     const emojiMap = { available: ':large_green_circle:', busy: ':red_circle:', break: ':pause_button:', offline: ':black_circle:' };
     const textMap = { available: 'In the office', busy: 'Busy', break: data.breakType ? 'On ' + data.breakType + ' break' : 'On break', offline: 'Away' };
@@ -245,6 +271,7 @@ io.on('connection', (socket) => {
       avatar: user.avatar, color: user.color, text: text.trim(),
       channel: channel || 'general', ts: new Date().toISOString()
     };
+    storeChatMsg(msg);
     io.emit('chat:message', msg);
     if (process.env.SLACK_BOT_TOKEN) {
       postSlackMessage('#' + (channel || 'general'), '*' + user.name + '*: ' + text.trim());
@@ -254,6 +281,7 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     const user = users.get(socket.id);
     if (user) {
+      logAttendance('leave', user);
       console.log(user.name + ' disconnected');
       users.delete(socket.id);
       for (const key of huddles.keys()) {
@@ -320,6 +348,41 @@ app.get('/', async (req, res, next) => {
     console.error('Zoho token exchange error:', e.message, e.response && JSON.stringify(e.response.data));
     return res.redirect('/?error=auth_failed');
   }
+});
+
+// ── Admin: attendance log ─────────────────────────────────────────────────────
+app.get('/api/admin/attendance', (req, res) => {
+  const pwd = req.query.pwd || req.headers['x-admin-pwd'];
+  const required = process.env.ADMIN_PASSWORD || 'commons-admin';
+  if (pwd !== required) return res.status(401).json({ error: 'Wrong password' });
+  res.json({ log: attendanceLog.slice().reverse(), count: attendanceLog.length });
+});
+
+// ── Slack Events API webhook (bidirectional bridge) ───────────────────────────
+app.post('/api/slack/events', express.raw({ type: 'application/json' }), (req, res) => {
+  let body;
+  try { body = JSON.parse(req.body); } catch { return res.sendStatus(400); }
+  if (body.type === 'url_verification') return res.json({ challenge: body.challenge });
+  if (body.event && body.event.type === 'message' && !body.event.subtype && !body.event.bot_id) {
+    const evt = body.event;
+    const chMap = { [process.env.SLACK_GENERAL_ID||'']: 'general', [process.env.SLACK_RANDOM_ID||'']: 'random', [process.env.SLACK_TEAM_ID||'']: 'team' };
+    const channel = chMap[evt.channel] || 'general';
+    const msg = {
+      id: Date.now(), userId: 'slack:' + evt.user,
+      userName: evt.username || ('Slack/' + evt.user),
+      avatar: '💬', color: '#4A154B',
+      text: evt.text || '', channel, ts: new Date().toISOString(), fromSlack: true
+    };
+    storeChatMsg(msg);
+    io.emit('chat:message', msg);
+  }
+  res.sendStatus(200);
+});
+
+// ── Chat history endpoint ─────────────────────────────────────────────────────
+app.get('/api/chat/history', (req, res) => {
+  const ch = req.query.channel || 'general';
+  res.json({ messages: chatHistory[ch] || [] });
 });
 
 const PORT = process.env.PORT || 3000;
