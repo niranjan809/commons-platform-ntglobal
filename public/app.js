@@ -25,6 +25,30 @@ const joinScreen = $('join-screen'), appEl = $('app'),
 
 let selectedAvatar = '🐱';
 
+let zohoToken = null; // set when user logs in via Zoho
+
+// ── Read Zoho params from URL (after OAuth redirect) ─────────────────────────
+(function () {
+  const p = new URLSearchParams(window.location.search);
+  const zName = p.get('zoho_name');
+  const zEmail = p.get('zoho_email');
+  const zToken = p.get('zoho_token');
+  if (zName) {
+    $('join-name').value = zName;
+    zohoToken = zToken || null;
+    const badge = $('zoho-badge');
+    badge.textContent = '\u2713 Signed in as ' + zName + (zEmail ? ' (' + zEmail + ')' : '');
+    badge.classList.remove('hidden');
+    $('zoho-login-btn').style.display = 'none';
+    history.replaceState({}, '', '/');
+  }
+  if (p.get('error') === 'auth_failed') {
+    alert('Zoho login failed \u2014 please try again.');
+    history.replaceState({}, '', '/');
+  }
+})();
+// ─────────────────────────────────────────────────────────────────────────────
+
 document.querySelectorAll('.av-opt').forEach(el => {
   el.addEventListener('click', () => {
     document.querySelectorAll('.av-opt').forEach(e => e.classList.remove('selected'));
