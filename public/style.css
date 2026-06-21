@@ -411,3 +411,93 @@ body {
   content: ''; flex: 1; height: 1px; background: #ddd;
 }
 .divider span { padding: 0 10px; }
+
+/* ─── Chat Search ─────────────────────────────────────────────────────── */
+.chat-search-bar {
+  display: flex; align-items: center; gap: 4px;
+  padding: 6px 12px; background: var(--green-mist);
+  border-bottom: 1px solid var(--green-pale);
+}
+.chat-search-bar input {
+  flex: 1; border: 1px solid var(--green-pale); border-radius: 20px;
+  padding: 5px 12px; font-size: 12px; font-family: inherit;
+  background: white; color: var(--text-dark); outline: none;
+}
+.chat-search-bar input:focus { border-color: var(--green-soft); }
+.btn-search-clear {
+  background: none; border: none; cursor: pointer; color: var(--text-light);
+  font-size: 14px; padding: 2px 6px; border-radius: 50%;
+}
+.btn-search-clear:hover { background: var(--green-pale); }
+.msg-highlight { background: #fff176; border-radius: 2px; padding: 0 1px; }
+.chat-no-results { text-align: center; padding: 20px; font-size: 13px; color: var(--text-light); }
+.msg-from-slack { border-left: 3px solid #4A154B; }
+.slack-badge {
+  font-size: 9px; background: #4A154B; color: white;
+  padding: 1px 5px; border-radius: 8px; margin-left: 5px;
+  vertical-align: middle; font-weight: 700;
+}
+
+/* ─── Break enhancements ──────────────────────────────────────────────── */
+.break-custom-input {
+  width: 60px; border: 1px solid var(--green-pale); border-radius: 6px;
+  padding: 4px 6px; font-size: 12px; font-family: inherit; background: white;
+}
+.break-return-display {
+  margin-top: 6px; font-size: 12px; color: var(--text-mid);
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.btn-danger {
+  background: var(--red); color: white; border: none; border-radius: 6px;
+  padding: 3px 8px; font-size: 11px; cursor: pointer; font-family: inherit;
+}
+.btn-danger:hover { background: #c05050; }
+
+/* ─── Sidebar footer ──────────────────────────────────────────────────── */
+.sidebar-footer { display: flex; gap: 8px; align-items: center; }
+.btn-admin {
+  background: var(--cream-dark); border: 1px solid var(--green-pale);
+  border-radius: 8px; padding: 6px 10px; cursor: pointer; font-size: 16px; flex-shrink: 0;
+}
+.btn-admin:hover { background: var(--green-pale); }
+
+/* ─── Admin modal ─────────────────────────────────────────────────────── */
+.admin-modal {
+  position: fixed; inset: 0; background: rgba(44,62,48,0.55);
+  display: flex; align-items: center; justify-content: center; z-index: 2000;
+}
+.admin-inner {
+  background: var(--cream); border-radius: var(--radius);
+  box-shadow: var(--shadow); width: min(90vw, 860px); max-height: 80vh;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.admin-header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 14px 18px; background: var(--green-dark); color: white;
+  font-weight: 700; font-size: 15px;
+}
+.admin-auth { display: flex; gap: 10px; padding: 20px; align-items: center; }
+.admin-auth input {
+  flex: 1; border: 1px solid var(--green-pale); border-radius: 8px;
+  padding: 8px 12px; font-size: 14px; font-family: inherit;
+}
+.admin-toolbar {
+  display: flex; gap: 10px; align-items: center; padding: 10px 16px;
+  border-bottom: 1px solid var(--green-pale); flex-shrink: 0;
+  font-size: 12px; color: var(--text-light);
+}
+.btn-secondary {
+  background: var(--cream-dark); border: 1px solid var(--green-pale);
+  border-radius: 6px; padding: 4px 10px; font-size: 12px;
+  cursor: pointer; font-family: inherit;
+}
+.btn-secondary:hover { background: var(--green-pale); }
+.admin-table-wrap { overflow-y: auto; flex: 1; }
+.admin-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.admin-table th {
+  background: var(--green-mist); padding: 8px 12px; text-align: left;
+  font-weight: 700; color: var(--text-mid); position: sticky; top: 0;
+  border-bottom: 1px solid var(--green-pale);
+}
+.admin-table td { padding: 7px 12px; border-bottom: 1px solid var(--green-pale); }
+.admin-table tr:hover td { background: var(--green-mist); }
