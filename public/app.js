@@ -36,7 +36,7 @@ let zohoToken = null; // set when user logs in via Zoho
   if (zName) {
     $('join-name').value = zName;
     zohoToken = zToken || null;
-    const badge = $('zoho-badge');
+    const badge = $('zoho-user-badge');
     badge.textContent = '\u2713 Signed in as ' + zName + (zEmail ? ' (' + zEmail + ')' : '');
     badge.classList.remove('hidden');
     $('zoho-login-btn').style.display = 'none';
