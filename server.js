@@ -102,8 +102,8 @@ async function createZohoMeeting(topic, userToken) {
 
     const res = await axios.post(
       'https://meeting.zoho.in/api/v2/' + zsoid + '/sessions.json',
-      'JSONString=' + encodeURIComponent(JSON.stringify(sessionPayload)),
-      { headers: { Authorization: 'Zoho-oauthtoken ' + tok, 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' } }
+      sessionPayload,
+      { headers: { Authorization: 'Zoho-oauthtoken ' + tok, 'Content-Type': 'application/json;charset=UTF-8' } }
     );
     console.log('Zoho Meeting created:', JSON.stringify(res.data).substring(0, 300));
     const m = res.data && (res.data.session || res.data);
