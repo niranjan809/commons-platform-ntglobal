@@ -299,14 +299,23 @@ function sendChat() {
   chatInput.value = '';
 }
 
-function renderChatMsg(msg) {
+function renderChatMsg(msg, highlight) {
+  const chatMessages = $('chat-messages');
+  if (chatMessages.querySelector('[data-msg-id="' + msg.id + '"]')) return;
   const div = document.createElement('div');
-  div.className = 'chat-msg';
+  div.className = 'chat-msg' + (msg.fromSlack ? ' msg-from-slack' : '');
+  div.dataset.msgId = msg.id;
   const time = new Date(msg.ts).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' });
-  div.innerHTML = '<div class="msg-avatar">' + (msg.avatar||'🐱') + '</div>' +
-    '<div class="msg-body"><div class="msg-header"><span class="msg-name">' + msg.userName + '</span>' +
-    '<span class="msg-time">' + time + '</span></div>' +
-    '<div class="msg-text">' + escHtml(msg.text) + '</div></div>';
+  const rawText = escHtml(msg.text);
+  const displayText = highlight
+    ? rawText.replace(new RegExp('(' + escRegex(escHtml(highlight)) + ')', 'gi'),
+        '<mark class="msg-highlight">$1</mark>')
+    : rawText;
+  const slackBadge = msg.fromSlack ? '<span class="slack-badge">Slack</span>' : '';
+  div.innerHTML = '<div class="msg-avatar">' + (msg.avatar||'') + '</div>' +
+    '<div class="msg-body"><div class="msg-header"><span class="msg-name">' + escHtml(msg.userName) +
+    slackBadge + '</span><span class="msg-time">' + time + '</span></div>' +
+    '<div class="msg-text">' + displayText + '</div></div>';
   chatMessages.appendChild(div);
   chatMessages.scrollTop = chatMessages.scrollHeight;
 }
