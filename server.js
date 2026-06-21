@@ -14,14 +14,14 @@ app.use(cors());
 app.use(express.json());
 
 const BASE_URL = process.env.BASE_URL || 'https://commons-platform-ntglobal-production.up.railway.app';
-const REDIRECT_URI = BASE_URL; // registered in Zoho API Console
+const REDIRECT_URI = BASE_URL;
 
 // ── Zoho OAuth Login ─────────────────────────────────────────────────────────
 app.get('/auth/zoho', (req, res) => {
   const params = new URLSearchParams({
     response_type: 'code',
     client_id: process.env.ZOHO_CLIENT_ID,
-    scope: 'openid profile email ZohoMeeting.meeting.CREATE',
+    scope: 'ZohoMeeting.meeting.CREATE',
     redirect_uri: REDIRECT_URI,
     access_type: 'offline',
     prompt: 'consent'
@@ -34,22 +34,34 @@ app.get('/', async (req, res, next) => {
   if (!req.query.code) return next();
   try {
     const tokenRes = await axios.post('https://accounts.zoho.in/oauth/v2/token', null, {
-      params: { grant_type: 'authorization_code',
-                client_id: process.env.ZOHO_CLIENT_ID,
-                client_secret: process.env.ZOHO_CLIENT_SECRET,
-                redirect_uri: REDIRECT_URI, code: req.query.code }
+      params: {
+        grant_type: 'authorization_code',
+        client_id: process.env.ZOHO_CLIENT_ID,
+        client_secret: process.env.ZOHO_CLIENT_SECRET,
+        redirect_uri: REDIRECT_URI,
+        code: req.query.code
+      }
     });
+    console.log('Zoho token exchange OK:', JSON.stringify(tokenRes.data).substring(0, 200));
     const access_token = tokenRes.data.access_token;
-    const profileRes = await axios.get('https://accounts.zoho.in/oauth/v2/user', {
-      headers: { Authorization: 'Zoho-oauthtoken ' + access_token }
-    });
-    const p = profileRes.data;
-    const name = ((p.First_Name || p.given_name || '') + ' ' + (p.Last_Name || p.family_name || '')).trim()
-                 || p.Display_Name || p.name || 'User';
-    const email = p.Email || p.email || '';
+
+    // Try profile fetch — non-fatal if it fails
+    let name = 'Zoho User', email = '';
+    try {
+      const profileRes = await axios.get('https://accounts.zoho.in/oauth/v2/user', {
+        headers: { Authorization: 'Zoho-oauthtoken ' + access_token }
+      });
+      const p = profileRes.data;
+      name = ((p.First_Name || p.given_name || '') + ' ' + (p.Last_Name || p.family_name || '')).trim()
+             || p.Display_Name || p.name || 'Zoho User';
+      email = p.Email || p.email || '';
+    } catch (pe) {
+      console.error('Profile fetch (non-fatal):', pe.message, pe.response && pe.response.data);
+    }
+
     return res.redirect('/?' + new URLSearchParams({ zoho_name: name, zoho_email: email, zoho_token: access_token }));
   } catch (e) {
-    console.error('Zoho auth error:', e.message, e.response && e.response.data);
+    console.error('Zoho token exchange error:', e.message, e.response && JSON.stringify(e.response.data));
     return res.redirect('/?error=auth_failed');
   }
 });
@@ -120,7 +132,7 @@ io.on('connection', (socket) => {
     const user = {
       id: socket.id, socketId: socket.id,
       name: data.name || 'Unnamed', role: data.role || 'Team Member',
-      avatar: data.avatar || (data.name ? data.name[0].toUpperCase() : '?'),
+      avatar: data.avatar || '🐱',
       color: data.color || '#7ec8a0',
       x: data.x || Math.floor(Math.random() * 600 + 100),
       y: data.y || Math.floor(Math.random() * 400 + 100),
