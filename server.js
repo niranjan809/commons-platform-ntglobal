@@ -13,60 +13,6 @@ const io = new Server(server, { cors: { origin: '*' } });
 app.use(cors());
 app.use(express.json());
 
-const BASE_URL = process.env.BASE_URL || 'https://commons-platform-ntglobal-production.up.railway.app';
-const REDIRECT_URI = BASE_URL;
-
-// ── Zoho OAuth Login ─────────────────────────────────────────────────────────
-app.get('/auth/zoho', (req, res) => {
-  const params = new URLSearchParams({
-    response_type: 'code',
-    client_id: process.env.ZOHO_CLIENT_ID,
-    scope: 'ZohoMeeting.meeting.CREATE',
-    redirect_uri: REDIRECT_URI,
-    access_type: 'offline',
-    prompt: 'consent'
-  });
-  res.redirect('https://accounts.zoho.in/oauth/v2/auth?' + params);
-});
-
-// Root: handles Zoho OAuth callback (when ?code= present) then serves the app
-app.get('/', async (req, res, next) => {
-  if (!req.query.code) return next();
-  try {
-    const tokenRes = await axios.post('https://accounts.zoho.in/oauth/v2/token', null, {
-      params: {
-        grant_type: 'authorization_code',
-        client_id: process.env.ZOHO_CLIENT_ID,
-        client_secret: process.env.ZOHO_CLIENT_SECRET,
-        redirect_uri: REDIRECT_URI,
-        code: req.query.code
-      }
-    });
-    console.log('Zoho token exchange OK:', JSON.stringify(tokenRes.data).substring(0, 200));
-    const access_token = tokenRes.data.access_token;
-
-    // Try profile fetch — non-fatal if it fails
-    let name = 'Zoho User', email = '';
-    try {
-      const profileRes = await axios.get('https://accounts.zoho.in/oauth/v2/user', {
-        headers: { Authorization: 'Zoho-oauthtoken ' + access_token }
-      });
-      const p = profileRes.data;
-      name = ((p.First_Name || p.given_name || '') + ' ' + (p.Last_Name || p.family_name || '')).trim()
-             || p.Display_Name || p.name || 'Zoho User';
-      email = p.Email || p.email || '';
-    } catch (pe) {
-      console.error('Profile fetch (non-fatal):', pe.message, pe.response && pe.response.data);
-    }
-
-    return res.redirect('/?' + new URLSearchParams({ zoho_name: name, zoho_email: email, zoho_token: access_token }));
-  } catch (e) {
-    console.error('Zoho token exchange error:', e.message, e.response && JSON.stringify(e.response.data));
-    return res.redirect('/?error=auth_failed');
-  }
-});
-// ─────────────────────────────────────────────────────────────────────────────
-
 app.use(express.static(path.join(__dirname, 'public')));
 
 const users = new Map();
@@ -90,77 +36,98 @@ function checkProximity(movedUser) {
 
 function huddleKey(a, b) { return [a, b].sort().join('::'); }
 
-async function createZohoMeeting(topic, userToken) {
-  const token = userToken || process.env.ZOHO_ACCESS_TOKEN;
-  if (!token) return null;
+async function refreshZohoToken() {
+  if (!process.env.ZOHO_REFRESH_TOKEN || !process.env.ZOHO_CLIENT_ID || !process.env.ZOHO_CLIENT_SECRET) return null;
   try {
-    // Step 1: get zsoid (Zoho Org ID) and user ZUID from accounts userinfo
-    let zsoid = null, presenterZuid = null;
-    try {
-      const infoRes = await axios.get('https://accounts.zoho.in/oauth/v2/userinfo', {
-        headers: { Authorization: 'Zoho-oauthtoken ' + token }
-      });
-      console.log('Userinfo:', JSON.stringify(infoRes.data).substring(0, 200));
-      const d = infoRes.data;
-      zsoid = d.ZSOID || d.zsoid || d.org_id;
-      presenterZuid = d.ZUID || d.sub || d.userId || d.id;
-    } catch (ie) {
-      console.error('Userinfo failed:', ie.message, JSON.stringify(ie.response && ie.response.data).substring(0, 150));
+    const res = await axios.post('https://accounts.zoho.in/oauth/v2/token', null, {
+      params: {
+        grant_type: 'refresh_token',
+        client_id: process.env.ZOHO_CLIENT_ID,
+        client_secret: process.env.ZOHO_CLIENT_SECRET,
+        refresh_token: process.env.ZOHO_REFRESH_TOKEN
+      }
+    });
+    if (res.data && res.data.access_token) {
+      process.env.ZOHO_ACCESS_TOKEN = res.data.access_token;
+      console.log('Zoho token refreshed successfully');
+      return res.data.access_token;
     }
+    console.error('Refresh missing access_token:', JSON.stringify(res.data).substring(0, 200));
+  } catch (e) {
+    console.error('Token refresh failed:', e.message, JSON.stringify(e.response && e.response.data).substring(0, 150));
+  }
+  return null;
+}
 
-    // Step 2: fallback — try Zoho Meeting self-info endpoint
+async function createZohoMeeting(topic, userToken) {
+  let token = userToken || process.env.ZOHO_ACCESS_TOKEN;
+  if (!token) return null;
+
+  async function attempt(tok) {
+    let zsoid = process.env.ZOHO_ORG_ID || null;
+    let presenterZuid = null;
+
     if (!zsoid) {
       try {
-        const mRes = await axios.get('https://meeting.zoho.in/meeting/api/v2/users/selfinfo.json', {
-          headers: { Authorization: 'Zoho-oauthtoken ' + token }
+        const infoRes = await axios.get('https://accounts.zoho.in/oauth/v2/userinfo', {
+          headers: { Authorization: 'Zoho-oauthtoken ' + tok }
         });
-        console.log('Meeting selfinfo:', JSON.stringify(mRes.data).substring(0, 200));
-        const d2 = mRes.data;
-        zsoid = d2.zsoid || d2.ZSOID || (d2.user && d2.user.zsoid);
-        presenterZuid = presenterZuid || d2.userId || d2.ZUID || (d2.user && d2.user.userId);
-      } catch (me) {
-        console.error('Meeting selfinfo failed:', me.message, JSON.stringify(me.response && me.response.data).substring(0, 150));
+        console.log('Userinfo:', JSON.stringify(infoRes.data).substring(0, 200));
+        const d = infoRes.data;
+        zsoid = d.ZSOID || d.zsoid || d.org_id;
+        presenterZuid = d.ZUID || d.sub || d.userId || d.id;
+      } catch (ie) {
+        const status = ie.response && ie.response.status;
+        console.error('Userinfo failed (' + status + '):', ie.message);
+        if (status === 401) throw { needsRefresh: true };
       }
     }
 
     if (!zsoid) {
-      console.error('No zsoid found — cannot create Zoho Meeting');
+      console.error('No zsoid — add ZOHO_ORG_ID to Railway env vars');
       return null;
     }
 
-    // Step 3: create meeting via v2 API with JSONString form param
     const now = new Date();
     const pad = n => String(n).padStart(2, '0');
     const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     const startTime = months[now.getMonth()] + ' ' + pad(now.getDate()) + ', ' + now.getFullYear() +
       ' ' + pad(now.getHours()) + ':' + pad(now.getMinutes()) + ' IST';
 
-    const sessionPayload = {
-      session: {
-        topic: topic || 'Office Huddle',
-        presenter: presenterZuid,
-        startTime: startTime,
-        duration: 3600000,
-        timezone: 'Asia/Calcutta'
-      }
-    };
+    const sessionPayload = { session: {
+      topic: topic || 'Office Huddle',
+      startTime, duration: 3600000, timezone: 'Asia/Calcutta',
+      ...(presenterZuid ? { presenter: presenterZuid } : {})
+    }};
 
     const res = await axios.post(
       'https://meeting.zoho.in/api/v2/' + zsoid + '/sessions.json',
       'JSONString=' + encodeURIComponent(JSON.stringify(sessionPayload)),
-      { headers: {
-          Authorization: 'Zoho-oauthtoken ' + token,
-          'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'
-      }}
+      { headers: { Authorization: 'Zoho-oauthtoken ' + tok, 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' } }
     );
-    console.log('Zoho Meeting response:', JSON.stringify(res.data).substring(0, 300));
+    console.log('Zoho Meeting created:', JSON.stringify(res.data).substring(0, 300));
     const m = res.data && (res.data.session || res.data);
     return (m && (m.joinLink || m.join_url || m.joinUrl || m.joinlink || m.join_link)) || null;
+  }
+
+  try {
+    return await attempt(token);
   } catch (e) {
-    console.error('Zoho Meeting error:', e.message, JSON.stringify(e.response && e.response.data).substring(0, 300));
+    if (e && e.needsRefresh) {
+      console.log('Token expired — refreshing...');
+      const fresh = await refreshZohoToken();
+      if (fresh) {
+        try { return await attempt(fresh); } catch (e2) {
+          console.error('Meeting error after refresh:', e2.message, JSON.stringify(e2.response && e2.response.data).substring(0, 200));
+        }
+      }
+    } else {
+      console.error('Zoho Meeting error:', e.message, JSON.stringify(e.response && e.response.data).substring(0, 300));
+    }
     return null;
   }
 }
+
 async function postSlackMessage(channel, text) {
   if (!process.env.SLACK_BOT_TOKEN) return;
   try {
@@ -185,19 +152,18 @@ io.on('connection', (socket) => {
     const user = {
       id: socket.id, socketId: socket.id,
       name: data.name || 'Unnamed', role: data.role || 'Team Member',
-      avatar: data.avatar || '🐱',
-      color: data.color || '#7ec8a0',
+      avatar: data.avatar || '🐱', color: data.color || '#7ec8a0',
       x: data.x || Math.floor(Math.random() * 600 + 100),
       y: data.y || Math.floor(Math.random() * 400 + 100),
       status: 'available', breakType: null, breakReturnAt: null,
       slackUsername: data.slackUsername || '', zohoMeetLink: data.zohoMeetLink || '',
-      zohoToken: data.zohoToken || '', email: data.email || '',
+      zohoToken: data.zohoToken || null,
       activity: '', team: data.team || ''
     };
     users.set(socket.id, user);
     socket.emit('init', { you: user, users: getUsersArray() });
     socket.broadcast.emit('user:joined', user);
-    console.log(user.name + ' joined');
+    console.log(user.name + ' joined' + (user.zohoToken ? ' (Zoho SSO)' : ''));
   });
 
   socket.on('move', ({ x, y }) => {
@@ -211,17 +177,15 @@ io.on('connection', (socket) => {
       const key = huddleKey(socket.id, other.id);
       if (!huddles.has(key)) {
         huddles.set(key, { zohoMeetLink: null, createdAt: Date.now() });
-        const token = user.zohoToken || other.zohoToken || process.env.ZOHO_ACCESS_TOKEN;
-        createZohoMeeting('Huddle: ' + user.name + ' & ' + other.name, token).then((meetLink) => {
+        const meetToken = user.zohoToken || other.zohoToken || null;
+        createZohoMeeting('Huddle: ' + user.name + ' & ' + other.name, meetToken).then((meetLink) => {
           huddles.set(key, { zohoMeetLink: meetLink, createdAt: Date.now() });
           io.to(socket.id).emit('proximity:meet', { with: other, meetLink });
           io.to(other.id).emit('proximity:meet', { with: user, meetLink });
-          if (meetLink) {
-            if (user.slackUsername) postSlackMessage(user.slackUsername,
-              'Near *' + other.name + '* in the office — Zoho huddle: ' + meetLink);
-            if (other.slackUsername) postSlackMessage(other.slackUsername,
-              'Near *' + user.name + '* in the office — Zoho huddle: ' + meetLink);
-          }
+          if (user.slackUsername) postSlackMessage(user.slackUsername,
+            'You are near *' + other.name + '* in the office — Zoho huddle: ' + meetLink);
+          if (other.slackUsername) postSlackMessage(other.slackUsername,
+            'You are near *' + user.name + '* in the office — Zoho huddle: ' + meetLink);
         });
       }
     }
@@ -296,8 +260,7 @@ io.on('connection', (socket) => {
 
 app.post('/api/meet/create', async (req, res) => {
   try {
-    const token = (req.body && req.body.zohoToken) || process.env.ZOHO_ACCESS_TOKEN;
-    const meetLink = await createZohoMeeting((req.body && req.body.topic) || 'Office Meeting', token);
+    const meetLink = await createZohoMeeting((req.body && req.body.topic) || 'Office Meeting');
     res.json({ meetLink });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -308,7 +271,52 @@ app.get('/api/users', (req, res) => {
   res.json(getUsersArray());
 });
 
+const REDIRECT_URI = (process.env.BASE_URL || 'https://commons-platform-ntglobal-production.up.railway.app') + '/';
+
+app.get('/auth/zoho', (req, res) => {
+  const params = new URLSearchParams({
+    response_type: 'code',
+    client_id: process.env.ZOHO_CLIENT_ID || '',
+    redirect_uri: REDIRECT_URI,
+    scope: 'ZohoMeeting.meeting.CREATE',
+    access_type: 'offline'
+  });
+  res.redirect('https://accounts.zoho.in/oauth/v2/auth?' + params);
+});
+
+app.get('/', async (req, res, next) => {
+  if (!req.query.code) return next();
+  try {
+    const tokenRes = await axios.post('https://accounts.zoho.in/oauth/v2/token', null, {
+      params: {
+        grant_type: 'authorization_code',
+        client_id: process.env.ZOHO_CLIENT_ID,
+        client_secret: process.env.ZOHO_CLIENT_SECRET,
+        redirect_uri: REDIRECT_URI,
+        code: req.query.code
+      }
+    });
+    const access_token = tokenRes.data.access_token;
+    let name = 'Zoho User', email = '';
+    try {
+      const profileRes = await axios.get('https://accounts.zoho.in/oauth/v2/userinfo', {
+        headers: { Authorization: 'Zoho-oauthtoken ' + access_token }
+      });
+      const p = profileRes.data;
+      name = ((p.First_Name || p.given_name || '') + ' ' + (p.Last_Name || p.family_name || '')).trim()
+             || p.Display_Name || p.name || 'Zoho User';
+      email = p.Email || p.email || '';
+    } catch (pe) {
+      console.error('Profile fetch (non-fatal):', pe.message, pe.response && pe.response.data);
+    }
+    return res.redirect('/?' + new URLSearchParams({ zoho_name: name, zoho_email: email, zoho_token: access_token }));
+  } catch (e) {
+    console.error('Zoho token exchange error:', e.message, e.response && JSON.stringify(e.response.data));
+    return res.redirect('/?error=auth_failed');
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log('Commons Platform running at http://localhost:' + PORT);
+  console.log('\nCommons Platform running at http://localhost:' + PORT + '\n');
 });
