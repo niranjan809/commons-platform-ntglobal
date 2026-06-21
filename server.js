@@ -13,51 +13,44 @@ const io = new Server(server, { cors: { origin: '*' } });
 app.use(cors());
 app.use(express.json());
 
-// ── Zoho OAuth login ─────────────────────────────────────────────────────────
-const CLIENT_ID     = process.env.ZOHO_CLIENT_ID;
-const CLIENT_SECRET = process.env.ZOHO_CLIENT_SECRET;
-const BASE_URL      = process.env.BASE_URL || 'https://commons-platform-ntglobal-production.up.railway.app';
-const REDIRECT_URI  = BASE_URL + '/auth/zoho/callback';
+const BASE_URL = process.env.BASE_URL || 'https://commons-platform-ntglobal-production.up.railway.app';
+const REDIRECT_URI = BASE_URL; // registered in Zoho API Console
 
+// ── Zoho OAuth Login ─────────────────────────────────────────────────────────
 app.get('/auth/zoho', (req, res) => {
-  const url = 'https://accounts.zoho.in/oauth/v2/auth?' + new URLSearchParams({
+  const params = new URLSearchParams({
     response_type: 'code',
-    client_id: CLIENT_ID,
+    client_id: process.env.ZOHO_CLIENT_ID,
     scope: 'openid profile email ZohoMeeting.meeting.CREATE',
     redirect_uri: REDIRECT_URI,
     access_type: 'offline',
     prompt: 'consent'
   });
-  res.redirect(url);
+  res.redirect('https://accounts.zoho.in/oauth/v2/auth?' + params);
 });
 
-app.get('/auth/zoho/callback', async (req, res) => {
-  const { code } = req.query;
-  if (!code) return res.redirect('/?error=no_code');
+// Root: handles Zoho OAuth callback (when ?code= present) then serves the app
+app.get('/', async (req, res, next) => {
+  if (!req.query.code) return next();
   try {
     const tokenRes = await axios.post('https://accounts.zoho.in/oauth/v2/token', null, {
-      params: { grant_type: 'authorization_code', client_id: CLIENT_ID,
-                client_secret: CLIENT_SECRET, redirect_uri: REDIRECT_URI, code }
+      params: { grant_type: 'authorization_code',
+                client_id: process.env.ZOHO_CLIENT_ID,
+                client_secret: process.env.ZOHO_CLIENT_SECRET,
+                redirect_uri: REDIRECT_URI, code: req.query.code }
     });
-    const { access_token, refresh_token } = tokenRes.data;
-
-    // Get user profile
+    const access_token = tokenRes.data.access_token;
     const profileRes = await axios.get('https://accounts.zoho.in/oauth/v2/user', {
       headers: { Authorization: 'Zoho-oauthtoken ' + access_token }
     });
-    const profile = profileRes.data;
-    const name  = profile.First_Name + ' ' + profile.Last_Name;
-    const email = profile.Email;
-    const avatar = (profile.First_Name || 'U')[0].toUpperCase();
-
-    // Redirect to app with user info in query (simple, no session needed)
-    res.redirect('/?' + new URLSearchParams({
-      zoho_name: name.trim(), zoho_email: email,
-      zoho_avatar: avatar, zoho_token: access_token
-    }));
+    const p = profileRes.data;
+    const name = ((p.First_Name || p.given_name || '') + ' ' + (p.Last_Name || p.family_name || '')).trim()
+                 || p.Display_Name || p.name || 'User';
+    const email = p.Email || p.email || '';
+    return res.redirect('/?' + new URLSearchParams({ zoho_name: name, zoho_email: email, zoho_token: access_token }));
   } catch (e) {
     console.error('Zoho auth error:', e.message, e.response && e.response.data);
-    res.redirect('/?error=auth_failed');
+    return res.redirect('/?error=auth_failed');
   }
 });
 // ─────────────────────────────────────────────────────────────────────────────
@@ -69,7 +62,7 @@ const PROXIMITY_RADIUS = 80;
 const huddles = new Map();
 
 function getUsersArray() {
-  return Array.from(users.values()).map(u => ({ ...u, socketId: undefined }));
+  return Array.from(users.values()).map(u => ({ ...u, socketId: undefined, zohoToken: undefined }));
 }
 
 function checkProximity(movedUser) {
@@ -127,7 +120,7 @@ io.on('connection', (socket) => {
     const user = {
       id: socket.id, socketId: socket.id,
       name: data.name || 'Unnamed', role: data.role || 'Team Member',
-      avatar: data.avatar || data.name && data.name[0].toUpperCase() || '?',
+      avatar: data.avatar || (data.name ? data.name[0].toUpperCase() : '?'),
       color: data.color || '#7ec8a0',
       x: data.x || Math.floor(Math.random() * 600 + 100),
       y: data.y || Math.floor(Math.random() * 400 + 100),
@@ -153,16 +146,16 @@ io.on('connection', (socket) => {
       const key = huddleKey(socket.id, other.id);
       if (!huddles.has(key)) {
         huddles.set(key, { zohoMeetLink: null, createdAt: Date.now() });
-        const token = user.zohoToken || process.env.ZOHO_ACCESS_TOKEN;
+        const token = user.zohoToken || other.zohoToken || process.env.ZOHO_ACCESS_TOKEN;
         createZohoMeeting('Huddle: ' + user.name + ' & ' + other.name, token).then((meetLink) => {
           huddles.set(key, { zohoMeetLink: meetLink, createdAt: Date.now() });
           io.to(socket.id).emit('proximity:meet', { with: other, meetLink });
           io.to(other.id).emit('proximity:meet', { with: user, meetLink });
           if (meetLink) {
             if (user.slackUsername) postSlackMessage(user.slackUsername,
-              'You are near *' + other.name + '* — Zoho huddle: ' + meetLink);
+              'Near *' + other.name + '* in the office — Zoho huddle: ' + meetLink);
             if (other.slackUsername) postSlackMessage(other.slackUsername,
-              'You are near *' + user.name + '* — Zoho huddle: ' + meetLink);
+              'Near *' + user.name + '* in the office — Zoho huddle: ' + meetLink);
           }
         });
       }
