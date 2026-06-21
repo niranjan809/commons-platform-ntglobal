@@ -95,13 +95,13 @@ async function createZohoMeeting(topic, userToken) {
   if (!token) return null;
   try {
     const res = await axios.post(
-      'https://meeting.zoho.in/api/v1/meetings.json',
-      { meeting: { topic: topic || 'Office Huddle', type: 1 } },
+      'https://meeting.zoho.in/api/v1/sessions.json',
+      { session: { topic: topic || 'Office Huddle', type: 1 } },
       { headers: { Authorization: 'Zoho-oauthtoken ' + token, 'Content-Type': 'application/json' } }
     );
     console.log('Zoho Meeting response:', JSON.stringify(res.data).substring(0, 300));
-    const m = res.data && (res.data.meeting || res.data);
-    return (m && (m.join_url || m.joinlink || m.joinLink || m.join_link)) || null;
+    const m = res.data && (res.data.session || res.data);
+    return (m && (m.join_url || m.joinUrl || m.joinlink || m.joinLink || m.join_link)) || null;
   } catch (e) {
     console.error('Zoho Meeting error:', e.message, JSON.stringify(e.response && e.response.data));
     return null;
