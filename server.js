@@ -116,8 +116,9 @@ async function createZohoMeeting(topic, userToken) {
   try {
     return await attempt(token);
   } catch (e) {
-    if (e && e.needsRefresh) {
-      console.log('Token expired — refreshing...');
+    const status = e.response && e.response.status;
+    if (e.needsRefresh || status === 401) {
+      console.log('Token expired (status ' + status + ') — refreshing...');
       const fresh = await refreshZohoToken();
       if (fresh) {
         try { return await attempt(fresh); } catch (e2) {
