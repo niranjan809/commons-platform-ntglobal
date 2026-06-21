@@ -97,10 +97,11 @@ async function createZohoMeeting(topic, userToken) {
     const startTime = months[now.getMonth()] + ' ' + pad(now.getDate()) + ', ' + now.getFullYear() +
       ' ' + pad(h12) + ':' + pad(now.getMinutes()) + ' ' + ampm;
 
+    const presenter = presenterZuid || process.env.ZOHO_PRESENTER_ZUIDD || null;
     const sessionPayload = { session: {
       topic: topic || 'Office Huddle',
       startTime, duration: 3600000, timezone: 'Asia/Calcutta',
-      ...(presenterZuid ? { presenter: presenterZuid } : {})
+      ...(presenter ? { presenter: Number(presenter) } : {})
     }};
 
     const res = await axios.post(
