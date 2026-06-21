@@ -4,7 +4,10 @@ const state = {
   me: null, users: new Map(), socket: null,
   canvas: null, ctx: null, keys: {},
   animFrame: null, currentChannel: 'general',
-  popoverTarget: null
+  popoverTarget: null,
+  chatHistory: { general: [], random: [], team: [] },
+  searchQuery: '',
+  adminPwd: null
 };
 
 const SPEED = 3, AVATAR_R = 28, MEADOW_W = 1200, MEADOW_H = 800;
@@ -119,7 +122,19 @@ function bindSocket() {
     renderMemberList();
   });
   s.on('user:profile', ({ id, ...data }) => { const u = state.users.get(id); if (u) Object.assign(u, data); renderMemberList(); });
-  s.on('chat:message', msg => { if (msg.channel === state.currentChannel) renderChatMsg(msg); });
+  s.on('chat:history', ({ channel, messages }) => {
+    state.chatHistory[channel] = messages;
+    if (channel === state.currentChannel) refreshChatView();
+  });
+  s.on('chat:message', msg => {
+    if (!state.chatHistory[msg.channel]) state.chatHistory[msg.channel] = [];
+    state.chatHistory[msg.channel].push(msg);
+    if (msg.channel === state.currentChannel) {
+      if (!state.searchQuery || msg.text.toLowerCase().includes(state.searchQuery.toLowerCase())) {
+        renderChatMsg(msg, state.searchQuery);
+      }
+    }
+  });
   s.on('proximity:meet', ({ with: other, meetLink }) => showProximityToast(other, meetLink));
   s.on('proximity:left', () => dismissToast());
 }
@@ -383,123 +398,127 @@ function getCountdown(isoString) {
 }
 
 function escHtml(str) {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-function escRegex(s) {
-  var chars = ['.', '+', '*', '?', '^', '$', '{', '}', '(', ')', '|', '[', ']', '\\'];
-  return s.split('').map(function(c) { return chars.indexOf(c) >= 0 ? '\\' + c : c; }).join('');
+  if (!str) return '';
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+function escRegex(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// ── Chat search ───────────────────────────────────────────────────────────────
 function refreshChatView() {
   chatMessages.innerHTML = '';
-  var msgs = state.chatHistory[state.currentChannel] || [];
-  var q = state.searchQuery;
-  var filtered = q ? msgs.filter(function(m) { return m.text && m.text.toLowerCase().indexOf(q.toLowerCase()) >= 0; }) : msgs;
-  document.getElementById('chat-no-results').classList.toggle('hidden', !q || filtered.length > 0);
-  for (var i = 0; i < filtered.length; i++) renderChatMsg(filtered[i], q || null);
+  const msgs = state.chatHistory[state.currentChannel] || [];
+  const q = state.searchQuery;
+  const filtered = q ? msgs.filter(m => m.text && m.text.toLowerCase().includes(q.toLowerCase())) : msgs;
+  $('chat-no-results').classList.toggle('hidden', !q || filtered.length > 0);
+  for (const m of filtered) renderChatMsg(m, q || null);
 }
 
-var chatSearchEl = document.getElementById('chat-search');
-var chatSearchClear = document.getElementById('chat-search-clear');
-chatSearchEl.addEventListener('input', function() {
+const chatSearchEl = $('chat-search');
+const chatSearchClear = $('chat-search-clear');
+chatSearchEl.addEventListener('input', () => {
   state.searchQuery = chatSearchEl.value.trim();
   chatSearchClear.classList.toggle('hidden', !state.searchQuery);
   refreshChatView();
 });
-chatSearchClear.addEventListener('click', function() {
+chatSearchClear.addEventListener('click', () => {
   chatSearchEl.value = ''; state.searchQuery = '';
   chatSearchClear.classList.add('hidden');
   refreshChatView();
 });
 
-var breakMinsSelect = document.getElementById('break-minutes');
-var breakCustomInput = document.getElementById('break-custom-mins');
-var breakReturnDisplay = document.getElementById('break-return-display');
-var breakReturnTimeEl = document.getElementById('break-return-time');
-var breakCancelBtn = document.getElementById('break-cancel-btn');
+// ── Break: custom minutes + return display + auto-return ──────────────────────
+const breakMinsEl2 = $('break-minutes');
+const breakCustomInput = $('break-custom-mins');
+const breakReturnDisplay = $('break-return-display');
+const breakReturnTimeEl = $('break-return-time');
+const breakCancelBtn = $('break-cancel-btn');
 
-breakMinsSelect.addEventListener('change', function() {
-  breakCustomInput.classList.toggle('hidden', breakMinsSelect.value !== 'custom');
+breakMinsEl2.addEventListener('change', () => {
+  breakCustomInput.classList.toggle('hidden', breakMinsEl2.value !== 'custom');
 });
 
-document.getElementById('break-confirm-btn').addEventListener('click', function() {
-  var type = document.getElementById('break-type').value;
-  var mins = parseInt(breakMinsSelect.value, 10);
-  if (breakMinsSelect.value === 'custom') {
+$('break-confirm-btn').addEventListener('click', () => {
+  const type = $('break-type').value;
+  let mins = parseInt(breakMinsEl2.value, 10);
+  if (breakMinsEl2.value === 'custom') {
     mins = parseInt(breakCustomInput.value, 10);
     if (!mins || mins < 1) { breakCustomInput.focus(); return; }
   }
-  var returnAt = new Date(Date.now() + mins * 60000).toISOString();
+  const returnAt = new Date(Date.now() + mins * 60000).toISOString();
   emitStatus('break', type, returnAt);
-  var retTime = new Date(returnAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const retTime = new Date(returnAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   breakReturnTimeEl.textContent = retTime;
   breakReturnDisplay.classList.remove('hidden');
 });
 
-breakCancelBtn.addEventListener('click', function() {
+breakCancelBtn.addEventListener('click', () => {
   emitStatus('available', null, null);
-  document.getElementById('status-select').value = 'available';
+  $('status-select').value = 'available';
   breakComposer.classList.add('hidden');
   breakReturnDisplay.classList.add('hidden');
 });
 
-setInterval(function() {
+setInterval(() => {
   if (state.me && state.me.status === 'break' && state.me.breakReturnAt) {
     if (new Date(state.me.breakReturnAt) <= new Date()) {
       emitStatus('available', null, null);
-      document.getElementById('status-select').value = 'available';
+      $('status-select').value = 'available';
       breakComposer.classList.add('hidden');
       breakReturnDisplay.classList.add('hidden');
-      addSystemMsg('⏰ Your break is over — you\'re back as Available');
+      addSystemMsg('Your break is over — you are back as Available');
     }
   }
 }, 10000);
 
-document.getElementById('admin-open-btn').addEventListener('click', function() { document.getElementById('admin-modal').classList.remove('hidden'); });
-document.getElementById('admin-close').addEventListener('click', function() { document.getElementById('admin-modal').classList.add('hidden'); });
+// ── Admin panel ───────────────────────────────────────────────────────────────
+$('admin-open-btn').addEventListener('click', () => $('admin-modal').classList.remove('hidden'));
+$('admin-close').addEventListener('click', () => $('admin-modal').classList.add('hidden'));
 
-var adminPwd = '';
-document.getElementById('admin-login-btn').addEventListener('click', fetchAttendance);
-document.getElementById('admin-pwd-input').addEventListener('keydown', function(e) { if (e.key === 'Enter') fetchAttendance(); });
-document.getElementById('admin-refresh-btn').addEventListener('click', fetchAttendance);
+let adminPwd = '';
+$('admin-login-btn').addEventListener('click', fetchAttendance);
+$('admin-pwd-input').addEventListener('keydown', e => { if (e.key === 'Enter') fetchAttendance(); });
+$('admin-refresh-btn').addEventListener('click', fetchAttendance);
 
 async function fetchAttendance() {
-  adminPwd = document.getElementById('admin-pwd-input').value || adminPwd;
+  adminPwd = $('admin-pwd-input').value;
   try {
-    var res = await fetch('/api/admin/attendance?pwd=' + encodeURIComponent(adminPwd));
+    const res = await fetch('/api/admin/attendance?pwd=' + encodeURIComponent(adminPwd));
     if (res.status === 401) { alert('Wrong password'); return; }
-    var data = await res.json();
-    document.getElementById('admin-auth').classList.add('hidden');
-    document.getElementById('admin-content').classList.remove('hidden');
-    document.getElementById('admin-count').textContent = data.count + ' events';
-    renderAttendanceTable(data.log);
-  } catch(e) { alert('Error: ' + e.message); }
+    const { log, count } = await res.json();
+    $('admin-auth').classList.add('hidden');
+    $('admin-content').classList.remove('hidden');
+    $('admin-count').textContent = count + ' events';
+    renderAttendanceTable(log);
+  } catch (e) { alert('Error: ' + e.message); }
 }
 
 function renderAttendanceTable(log) {
-  var tbody = document.getElementById('admin-tbody');
+  const tbody = $('admin-tbody');
   tbody.innerHTML = '';
-  var eventLabel = { join: '🟢 Joined', leave: '🔴 Left', break: '⏸ Break', available: '🟢 Available', busy: '🔴 Busy', offline: '⚫ Away' };
-  for (var i = 0; i < log.length; i++) {
-    var e = log[i];
-    var tr = document.createElement('tr');
-    var t = new Date(e.ts).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' });
-    var details = '';
-    if (e.breakType) details = e.breakType + (e.breakReturnAt ? ' → back at ' + new Date(e.breakReturnAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '');
-    tr.innerHTML = '<td>' + t + '</td><td>' + escHtml(e.avatar + ' ' + e.userName) + '</td><td>' + escHtml(e.role||'') + '</td><td>' + (eventLabel[e.type]||e.type) + '</td><td>' + escHtml(details) + '</td>';
+  for (const entry of log) {
+    const tr = document.createElement('tr');
+    const t = new Date(entry.ts).toLocaleString();
+    const retTime = entry.breakReturnAt
+      ? new Date(entry.breakReturnAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})
+      : '';
+    const details = entry.breakType ? (entry.breakType + (retTime ? ' back at ' + retTime : '')) : '';
+    tr.innerHTML = '<td>' + t + '</td><td>' + (entry.avatar||'') + ' ' + escHtml(entry.userName) +
+      '</td><td>' + escHtml(entry.role||'') + '</td><td>' + escHtml(entry.type) +
+      '</td><td>' + escHtml(details) + '</td>';
     tbody.appendChild(tr);
   }
+  $('admin-csv-btn').onclick = () => {
+    const rows = [['Time','User','Role','Event','Details']];
+    for (const e of log) {
+      rows.push([new Date(e.ts).toLocaleString(), e.userName, e.role||'', e.type, e.breakType||'']);
+    }
+    const csv = rows.map(r => r.map(c => '"' + String(c).replace(/"/g, '""') + '"').join(',')).join('\n');
+    const a = document.createElement('a');
+    a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+    a.download = 'attendance-' + Date.now() + '.csv';
+    a.click();
+  };
 }
-
-document.getElementById('admin-csv-btn').addEventListener('click', function() {
-  var rows = [['Time','User','Role','Event','Details']];
-  document.getElementById('admin-tbody').querySelectorAll('tr').forEach(function(tr) {
-    rows.push(Array.from(tr.cells).map(function(c) { return '"' + c.textContent.replace(/"/g,'""') + '"'; }));
-  });
-  var csv = rows.map(function(r) { return r.join(','); }).join('\n');
-  var a = document.createElement('a');
-  a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
-  a.download = 'commons-attendance-' + new Date().toISOString().slice(0,10) + '.csv';
-  a.click();
-});
-
