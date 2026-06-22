@@ -14,7 +14,7 @@ const SPEED = 3, AVATAR_R = 28, MEADOW_W = 1200, MEADOW_H = 800;
 
 const STATUS_COLOR = { available:'#48d077', busy:'#e07070', break:'#e8b86d', offline:'#888888' };
 const STATUS_LABEL = { available:'Available', busy:'Busy', break:'On Break', offline:'Away' };
-const BREAK_EMOJI = { lunch:'🍱', coffee:'☕', brb:'🚶', focus:'🎧', call:'📞' };
+const BREAK_EMOJI = { lunch:'\u{1f371}', coffee:'☕', brc:'\u{1f6b6}', focus:'\u{1f3a7}', call:'\u{1f4de}' };
 
 const $ = id => document.getElementById(id);
 const joinScreen = $('join-screen'), appEl = $('app'),
@@ -26,31 +26,31 @@ const joinScreen = $('join-screen'), appEl = $('app'),
   chatChannName = $('chat-channel-name'), proximityToast = $('proximity-toast'),
   profilePop = $('profile-popover');
 
-let selectedAvatar = '🐱';
+let selectedAvatar = '\u{1f431}';
+let zohoToken = null;
 
-let zohoToken = null; // set when user logs in via Zoho
+// ── Zoho OAuth popup ────────────────────────────────────────────────
+function applyZohoUser(name, email, token) {
+  $('join-name').value = name;
+  zohoToken = token || null;
+  const badge = $('zoho-badge');
+  badge.textContent = '✓ Signed in as ' + name + (email ? ' (' + email + ')' : '');
+  badge.classList.remove('hidden');
+  $('zoho-login-btn').style.display = 'none';
+}
 
-// ── Read Zoho params from URL (after OAuth redirect) ─────────────────────────
-(function () {
-  const p = new URLSearchParams(window.location.search);
-  const zName = p.get('zoho_name');
-  const zEmail = p.get('zoho_email');
-  const zToken = p.get('zoho_token');
-  if (zName) {
-    $('join-name').value = zName;
-    zohoToken = zToken || null;
-    const badge = $('zoho-user-badge');
-    badge.textContent = '\u2713 Signed in as ' + zName + (zEmail ? ' (' + zEmail + ')' : '');
-    badge.classList.remove('hidden');
-    $('zoho-login-btn').style.display = 'none';
-    history.replaceState({}, '', '/');
-  }
-  if (p.get('error') === 'auth_failed') {
-    alert('Zoho login failed \u2014 please try again.');
-    history.replaceState({}, '', '/');
-  }
-})();
-// ─────────────────────────────────────────────────────────────────────────────
+$('zoho-login-btn').addEventListener('click', () => {
+  const popup = window.open('/auth/zoho', 'zoho-auth',
+    'width=520,height=620,left=' + ((screen.width-520)/2) + ',top=' + ((screen.height-620)/2));
+  const onMsg = e => {
+    if (!e.data || e.data.type !== 'zoho-auth') return;
+    window.removeEventListener('message', onMsg);
+    if (e.data.error) { alert('Zoho login failed — please try again.'); return; }
+    applyZohoUser(e.data.name, e.data.email, e.data.token);
+    if (popup && !popup.closed) popup.close();
+  };
+  window.addEventListener('message', onMsg);
+});
 
 document.querySelectorAll('.av-opt').forEach(el => {
   el.addEventListener('click', () => {
@@ -64,7 +64,7 @@ $('join-btn').addEventListener('click', () => {
   const name = $('join-name').value.trim();
   if (!name) { $('join-name').focus(); return; }
   joinGame({ name, role: $('join-role').value.trim() || 'Team Member',
-    team: $('join-team').value.trim() || '', avatar: selectedAvatar });
+    team: $('join-team').value.trim() || '', avatar: selectedAvatar, zohoToken });
 });
 
 $('join-name').addEventListener('keydown', e => { if (e.key === 'Enter') $('join-btn').click(); });
@@ -79,7 +79,8 @@ function joinGame(profile) {
   state.socket = io();
   bindSocket();
   state.socket.emit('join', { name: profile.name, role: profile.role,
-    team: profile.team, avatar: profile.avatar, color: randomGreen() });
+    team: profile.team, avatar: profile.avatar, color: randomGreen(),
+    zohoToken: profile.zohoToken || null });
   selfName.textContent = profile.name;
   selfAvatar.textContent = profile.avatar;
   document.addEventListener('keydown', e => {
@@ -182,11 +183,11 @@ function drawMeadow() {
 }
 
 const DECO = [
-  {x:120,y:100,t:'🌳'},{x:900,y:80,t:'🌳'},{x:400,y:700,t:'🌳'},
-  {x:1050,y:500,t:'🌳'},{x:200,y:600,t:'🌳'},{x:750,y:200,t:'🌳'},
-  {x:600,y:650,t:'🌿'},{x:300,y:300,t:'🌿'},{x:850,y:650,t:'🌿'},
-  {x:150,y:450,t:'🌸'},{x:700,y:100,t:'🌸'},{x:950,y:350,t:'🌸'},
-  {x:500,y:350,t:'🪑'},{x:680,y:420,t:'🪑'}
+  {x:120,y:100,t:'\u{1f333}'},{x:900,y:80,t:'\u{1f333}'},{x:400,y:700,t:'\u{1f333}'},
+  {x:1050,y:500,t:'\u{1f333}'},{x:200,y:600,t:'\u{1f333}'},{x:750,y:200,t:'\u{1f333}'},
+  {x:600,y:650,t:'\u{1f33f}'},{x:300,y:300,t:'\u{1f33f}'},{x:850,y:650,t:'\u{1f33f}'},
+  {x:150,y:450,t:'\u{1f338}'},{x:700,y:100,t:'\u{1f338}'},{x:950,y:350,t:'\u{1f338}'},
+  {x:500,y:350,t:'\u{1fa91}'},{x:680,y:420,t:'\u{1fa91}'}
 ];
 
 function drawDecorations(ctx) {
@@ -204,7 +205,7 @@ function drawAvatar(ctx, u, isMe) {
   ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2);
   ctx.strokeStyle = isMe ? '#e8b86d' : 'white'; ctx.lineWidth = isMe ? 3.5 : 2; ctx.stroke();
   ctx.font = (r*1.1) + 'px serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText(u.avatar || '🐱', x, y);
+  ctx.fillText(u.avatar || '\u{1f431}', x, y);
   ctx.beginPath(); ctx.arc(x + r*0.65, y + r*0.65, 7, 0, Math.PI*2);
   ctx.fillStyle = STATUS_COLOR[u.status] || STATUS_COLOR.available; ctx.fill();
   ctx.strokeStyle = 'white'; ctx.lineWidth = 1.5; ctx.stroke();
@@ -241,7 +242,7 @@ function renderMemberList() {
       breakInfo = '<span class="member-break-countdown">' + emoji + ' ' + u.breakType + (cd ? ' · ' + cd : '') + '</span>';
       sub = '';
     }
-    li.innerHTML = '<span class="member-emoji">' + (u.avatar||'🐱') + '</span>' +
+    li.innerHTML = '<span class="member-emoji">' + (u.avatar||'\u{1f431}') + '</span>' +
       '<div class="member-info"><div class="member-name">' + u.name + isMe + '</div>' +
       (sub ? '<div class="member-sub">' + sub + '</div>' : '') + breakInfo + '</div>' +
       '<span class="dot dot-' + (u.status||'available') + '"></span>';
@@ -257,13 +258,6 @@ statusSelect.addEventListener('change', () => {
   if (val === 'break') { breakComposer.classList.remove('hidden'); }
   else { breakComposer.classList.add('hidden'); emitStatus(val, null, null); }
   updateSelfDot();
-});
-
-$('break-confirm-btn').addEventListener('click', () => {
-  const type = breakTypeEl.value;
-  const mins = parseInt(breakMinsEl.value, 10);
-  const returnAt = new Date(Date.now() + mins * 60000).toISOString();
-  emitStatus('break', type, returnAt);
 });
 
 function emitStatus(status, breakType, breakReturnAt) {
@@ -285,7 +279,7 @@ document.querySelectorAll('.ch-btn').forEach(btn => {
     btn.classList.add('active'); state.currentChannel = btn.dataset.ch;
     chatChannName.textContent = btn.dataset.ch;
     chatInput.placeholder = 'Message #' + btn.dataset.ch + '...';
-    chatMessages.innerHTML = '';
+    refreshChatView();
   });
 });
 
@@ -300,8 +294,6 @@ function sendChat() {
 }
 
 function renderChatMsg(msg, highlight) {
-  const chatMessages = $('chat-messages');
-  if (chatMessages.querySelector('[data-msg-id="' + msg.id + '"]')) return;
   const div = document.createElement('div');
   div.className = 'chat-msg' + (msg.fromSlack ? ' msg-from-slack' : '');
   div.dataset.msgId = msg.id;
@@ -312,8 +304,8 @@ function renderChatMsg(msg, highlight) {
         '<mark class="msg-highlight">$1</mark>')
     : rawText;
   const slackBadge = msg.fromSlack ? '<span class="slack-badge">Slack</span>' : '';
-  div.innerHTML = '<div class="msg-avatar">' + (msg.avatar||'') + '</div>' +
-    '<div class="msg-body"><div class="msg-header"><span class="msg-name">' + escHtml(msg.userName) +
+  div.innerHTML = '<div class="msg-avatar">' + (msg.avatar||'\u{1f431}') + '</div>' +
+    '<div class="msg-body"><div class="msg-header"><span class="msg-name">' + msg.userName +
     slackBadge + '</span><span class="msg-time">' + time + '</span></div>' +
     '<div class="msg-text">' + displayText + '</div></div>';
   chatMessages.appendChild(div);
@@ -330,10 +322,10 @@ function addSystemMsg(text) {
 
 function showProfilePopover(u, anchorEl) {
   state.popoverTarget = u;
-  $('pop-avatar').textContent = u.avatar || '🐱';
+  $('pop-avatar').textContent = u.avatar || '\u{1f431}';
   $('pop-name').textContent = u.name;
   $('pop-role').textContent = u.role || 'Team Member';
-  $('pop-status').textContent = (STATUS_COLOR[u.status] ? '' : '') + (STATUS_LABEL[u.status] || 'Available');
+  $('pop-status').textContent = STATUS_LABEL[u.status] || 'Available';
   $('pop-team').textContent = u.team ? ('Team: ' + u.team) : '';
   $('pop-activity').textContent = u.activity ? ('Currently: ' + u.activity) : '';
   const links = $('pop-links');
@@ -357,54 +349,45 @@ function showProfilePopover(u, anchorEl) {
   }
   const rect = anchorEl.getBoundingClientRect();
   profilePop.style.top = Math.min(rect.top, window.innerHeight - 360) + 'px';
-  profilePop.style.left = (rect.right + 12) + 'px';
+  profilePop.style.left = Math.max(4, rect.right + 8) + 'px';
   profilePop.classList.remove('hidden');
 }
 
-$('popover-close-btn').addEventListener('click', () => { profilePop.classList.add('hidden'); });
-document.addEventListener('click', e => {
-  if (!profilePop.contains(e.target) && !e.target.closest('.member-item')) profilePop.classList.add('hidden');
-});
+$('popover-close-btn').addEventListener('click', () => profilePop.classList.add('hidden'));
 
-$('meadow-canvas').addEventListener('click', e => {
-  const rect = state.canvas.getBoundingClientRect();
-  const me = state.me; if (!me) return;
-  const worldX = (e.clientX - rect.left) + (me.x - rect.width/2);
-  const worldY = (e.clientY - rect.top)  + (me.y - rect.height/2);
-  for (const [, u] of state.users) {
-    const dx = worldX - u.x, dy = worldY - u.y;
-    if (Math.sqrt(dx*dx + dy*dy) <= AVATAR_R + 6) {
-      showProfilePopover(u, { getBoundingClientRect: () => ({ top: e.clientY-20, right: e.clientX+20 }) });
-      break;
-    }
-  }
-});
-
+// ── Zoho Meeting quick-start ────────────────────────────────────────────
 $('quick-meet-btn').addEventListener('click', async () => {
-  const res = await fetch('/api/meet/create', { method: 'POST' });
-  const { meetLink } = await res.json();
-  window.open(meetLink, '_blank');
-  if (state.socket && state.me) {
-    state.me.zohoMeetLink = meetLink;
-    state.socket.emit('profile:update', { zohoMeetLink: meetLink });
-  }
+  try {
+    const res = await fetch('/api/zoho/start-meeting', { method: 'POST' });
+    const data = await res.json();
+    if (data.link) {
+      window.open(data.link, '_blank');
+      if (state.socket && state.me) state.socket.emit('user:profile', { zohoMeetLink: data.link });
+    } else {
+      alert('Could not start meeting: ' + (data.error || 'Unknown'));
+    }
+  } catch (e) { alert('Error: ' + e.message); }
 });
+
+// ── Helpers ───────────────────────────────────────────────────────────────────────────────
+function getCountdown(isoStr) {
+  if (!isoStr) return '';
+  const diff = new Date(isoStr) - new Date();
+  if (diff <= 0) return '';
+  return Math.ceil(diff / 60000) + 'm';
+}
 
 function showProximityToast(other, meetLink) {
-  $('toast-avatar').textContent = other.avatar || '🐱';
-  $('toast-name').textContent = "You're near " + other.name;
-  $('toast-meet-link').href = meetLink;
+  $('toast-avatar').textContent = other.avatar || '\u{1f431}';
+  $('toast-name').textContent = other.name;
+  const link = $('toast-meet-link');
+  link.href = meetLink || '#';
+  link.style.display = meetLink ? '' : 'none';
   proximityToast.classList.remove('hidden');
 }
 
-window.dismissToast = function() { proximityToast.classList.add('hidden'); };
-
-function getCountdown(isoString) {
-  const diff = new Date(isoString) - Date.now();
-  if (diff <= 0) return null;
-  const m = Math.floor(diff / 60000), s = Math.floor((diff % 60000) / 1000);
-  return m > 0 ? (m + 'm') : (s + 's');
-}
+function dismissToast() { proximityToast.classList.add('hidden'); }
+window.dismissToast = dismissToast;
 
 function escHtml(str) {
   if (!str) return '';
@@ -415,7 +398,7 @@ function escRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// ── Chat search ───────────────────────────────────────────────────────────────
+// ── Chat search ─────────────────────────────────────────────────────────────────────────────
 function refreshChatView() {
   chatMessages.innerHTML = '';
   const msgs = state.chatHistory[state.currentChannel] || [];
@@ -438,7 +421,7 @@ chatSearchClear.addEventListener('click', () => {
   refreshChatView();
 });
 
-// ── Break: custom minutes + return display + auto-return ──────────────────────
+// ── Break: custom minutes + return display + auto-return ──────────────────────────────────
 const breakMinsEl2 = $('break-minutes');
 const breakCustomInput = $('break-custom-mins');
 const breakReturnDisplay = $('break-return-display');
@@ -482,7 +465,7 @@ setInterval(() => {
   }
 }, 10000);
 
-// ── Admin panel ───────────────────────────────────────────────────────────────
+// ── Admin panel ───────────────────────────────────────────────────────────────────────────────
 $('admin-open-btn').addEventListener('click', () => $('admin-modal').classList.remove('hidden'));
 $('admin-close').addEventListener('click', () => $('admin-modal').classList.add('hidden'));
 
@@ -491,17 +474,52 @@ $('admin-login-btn').addEventListener('click', fetchAttendance);
 $('admin-pwd-input').addEventListener('keydown', e => { if (e.key === 'Enter') fetchAttendance(); });
 $('admin-refresh-btn').addEventListener('click', fetchAttendance);
 
+$('admin-reset-btn').addEventListener('click', async () => {
+  if (!adminPwd) return;
+  if (!confirm('Kick everyone and reset the room?')) return;
+  const res = await fetch('/api/admin/reset?pwd=' + encodeURIComponent(adminPwd), { method: 'POST' });
+  if (res.status === 401) { alert('Wrong password'); return; }
+  alert('Room reset — all users disconnected.');
+  renderLiveUsers([]);
+});
+
 async function fetchAttendance() {
   adminPwd = $('admin-pwd-input').value;
   try {
-    const res = await fetch('/api/admin/attendance?pwd=' + encodeURIComponent(adminPwd));
-    if (res.status === 401) { alert('Wrong password'); return; }
-    const { log, count } = await res.json();
+    const [attRes, usersRes] = await Promise.all([
+      fetch('/api/admin/attendance?pwd=' + encodeURIComponent(adminPwd)),
+      fetch('/api/admin/users?pwd=' + encodeURIComponent(adminPwd))
+    ]);
+    if (attRes.status === 401) { alert('Wrong password'); return; }
+    const { log, count } = await attRes.json();
+    const { users: liveUsers } = await usersRes.json();
     $('admin-auth').classList.add('hidden');
     $('admin-content').classList.remove('hidden');
     $('admin-count').textContent = count + ' events';
+    renderLiveUsers(liveUsers);
     renderAttendanceTable(log);
   } catch (e) { alert('Error: ' + e.message); }
+}
+
+function renderLiveUsers(liveUsers) {
+  const tbody = $('admin-live-tbody');
+  tbody.innerHTML = '';
+  $('admin-live-count').textContent = liveUsers.length + ' online';
+  for (const u of liveUsers) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td>' + (u.avatar||'\u{1f431}') + ' ' + escHtml(u.name) + '</td>' +
+      '<td>' + escHtml(u.role||'') + '</td>' +
+      '<td>' + escHtml(STATUS_LABEL[u.status] || u.status) + '</td>' +
+      '<td><button class="btn-sm btn-danger" data-uid="' + u.id + '">Remove</button></td>';
+    tr.querySelector('button').addEventListener('click', async () => {
+      if (!confirm('Remove ' + u.name + ' from the room?')) return;
+      await fetch('/api/admin/user/' + u.id + '?pwd=' + encodeURIComponent(adminPwd), { method: 'DELETE' });
+      tr.remove();
+      const cnt = parseInt($('admin-live-count').textContent) - 1;
+      $('admin-live-count').textContent = Math.max(0, cnt) + ' online';
+    });
+    tbody.appendChild(tr);
+  }
 }
 
 function renderAttendanceTable(log) {
