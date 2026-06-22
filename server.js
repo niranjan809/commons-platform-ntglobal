@@ -13,6 +13,39 @@ const io = new Server(server, { cors: { origin: '*' } });
 app.use(cors());
 app.use(express.json());
 
+// Zoho OAuth callback: Zoho redirects to root URL with ?code= (matches registered redirect URI)
+app.get('/', async (req, res, next) => {
+  if (!req.query.code) return next();
+  const RURI = process.env.BASE_URL || 'https://commons-platform-ntglobal-production.up.railway.app';
+  try {
+    const tokenRes = await axios.post('https://accounts.zoho.in/oauth/v2/token', null, {
+      params: {
+        grant_type: 'authorization_code',
+        client_id: process.env.ZOHO_CLIENT_ID,
+        client_secret: process.env.ZOHO_CLIENT_SECRET,
+        redirect_uri: RURI,
+        code: req.query.code
+      }
+    });
+    const access_token = tokenRes.data.access_token;
+    let name = 'Zoho User', email = '';
+    try {
+      const profileRes = await axios.get('https://accounts.zoho.in/oauth/v2/userinfo', {
+        headers: { Authorization: 'Zoho-oauthtoken ' + access_token }
+      });
+      const p = profileRes.data;
+      name = ((p.First_Name || p.given_name || '') + ' ' + (p.Last_Name || p.family_name || '')).trim()
+             || p.Display_Name || p.name || 'Zoho User';
+      email = p.Email || p.email || '';
+    } catch (pe) { console.error('Profile fetch (non-fatal):', pe.message); }
+    const payload = JSON.stringify({ type: 'zoho-auth', name, email, token: access_token });
+    res.send('<!DOCTYPE html><html><body><script>if(window.opener){window.opener.postMessage(' + payload + ',"*");window.close();}else{location.href="/";}</script></body></html>');
+  } catch (e) {
+    console.error('Zoho token exchange error:', e.message, e.response && JSON.stringify(e.response.data));
+    res.send('<script>window.opener&&window.opener.postMessage({type:"zoho-auth",error:"auth_failed"},"*");window.close();</script>');
+  }
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 const users = new Map();
@@ -303,7 +336,7 @@ app.get('/api/users', (req, res) => {
   res.json(getUsersArray());
 });
 
-const REDIRECT_URI = (process.env.BASE_URL || 'https://commons-platform-ntglobal-production.up.railway.app') + '/auth/zoho/callback';
+const REDIRECT_URI = process.env.BASE_URL || 'https://commons-platform-ntglobal-production.up.railway.app';
 
 app.get('/auth/zoho', (req, res) => {
   const params = new URLSearchParams({
