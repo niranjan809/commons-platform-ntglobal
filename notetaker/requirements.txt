@@ -1,0 +1,3 @@
+# Open-source meeting notetaker — transcription + Malayalam→English translation.
+# faster-whisper bundles audio decoding (PyAV), so no system ffmpeg install is needed.
+faster-whisper>=1.0.3
