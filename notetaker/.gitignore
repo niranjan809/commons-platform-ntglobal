@@ -1,0 +1,9 @@
+.env
+members.json
+output/
+*.wav
+*.mp3
+*.m4a
+*.mp4
+__pycache__/
+.venv/
