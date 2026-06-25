@@ -14,7 +14,7 @@ const SPEED = 3, AVATAR_R = 28, MEADOW_W = 1200, MEADOW_H = 800;
 
 const STATUS_COLOR = { available:'#48d077', busy:'#e07070', break:'#e8b86d', offline:'#888888' };
 const STATUS_LABEL = { available:'Available', busy:'Busy', break:'On Break', offline:'Away' };
-const BREAK_EMOJI = { lunch:'\u{1f371}', coffee:'☕', brc:'\u{1f6b6}', focus:'\u{1f3a7}', call:'\u{1f4de}' };
+const BREAK_EMOJI = { lunch:'\u{1f371}', coffee:'☕', brb:'\u{1f6b6}', focus:'\u{1f3a7}', call:'\u{1f4de}' };
 
 const $ = id => document.getElementById(id);
 const joinScreen = $('join-screen'), appEl = $('app'),
@@ -33,7 +33,7 @@ let zohoToken = null;
 function applyZohoUser(name, email, token) {
   $('join-name').value = name;
   zohoToken = token || null;
-  const badge = $('zoho-badge');
+  const badge = $('zoho-user-badge');
   badge.textContent = '✓ Signed in as ' + name + (email ? ' (' + email + ')' : '');
   badge.classList.remove('hidden');
   $('zoho-login-btn').style.display = 'none';
@@ -163,36 +163,135 @@ function handleMovement() {
   }
 }
 
+// ── Ghibli meadow scenery (deterministic positions so nothing flickers) ──────
+const PATCHES = [
+  {x:180,y:160,r:150,c:'rgba(120,190,130,0.32)'},{x:540,y:120,r:120,c:'rgba(160,214,168,0.30)'},
+  {x:1000,y:240,r:170,c:'rgba(120,190,130,0.28)'},{x:780,y:580,r:150,c:'rgba(160,214,168,0.26)'},
+  {x:300,y:660,r:140,c:'rgba(120,190,130,0.30)'},{x:1080,y:700,r:120,c:'rgba(160,214,168,0.28)'}
+];
+const TREES = [{x:120,y:130},{x:910,y:95},{x:1090,y:470},{x:210,y:600},{x:770,y:210},{x:1130,y:720}];
+const BUSHES = [{x:340,y:90},{x:640,y:300},{x:980,y:600},{x:170,y:380}];
+const FLOWERS = [
+  {x:150,y:450,c:'#f6a5c0'},{x:700,y:110,c:'#ffd36b'},{x:950,y:360,c:'#c79bf0'},
+  {x:430,y:520,c:'#ff9a9a'},{x:620,y:680,c:'#ffd36b'},{x:840,y:470,c:'#f6a5c0'},
+  {x:260,y:300,c:'#c79bf0'},{x:1010,y:560,c:'#ff9a9a'},{x:540,y:250,c:'#ffd36b'},
+  {x:380,y:430,c:'#f6a5c0'},{x:880,y:160,c:'#c79bf0'}
+];
+const GRASS = [
+  {x:340,y:200},{x:600,y:430},{x:820,y:300},{x:480,y:600},{x:700,y:540},{x:240,y:500},
+  {x:920,y:620},{x:1020,y:180},{x:160,y:280},{x:780,y:680},{x:450,y:160},{x:1080,y:380}
+];
+const MUSHROOMS = [{x:280,y:430},{x:890,y:540},{x:560,y:170}];
+const POND = { x:520, y:390, rx:130, ry:82 };
+const LILIES = [{dx:-40,dy:-10},{dx:35,dy:20},{dx:10,dy:-25}];
+
 function drawMeadow() {
   const { ctx, canvas, me } = state;
   if (!ctx || !me) return;
   const W = canvas.width, H = canvas.height;
+  const t = (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000;
   const camX = me.x - W/2, camY = me.y - H/2;
   ctx.clearRect(0, 0, W, H);
   ctx.save();
   ctx.translate(-camX, -camY);
+
+  // base meadow gradient (soft, layered greens)
   const grad = ctx.createLinearGradient(0, 0, 0, MEADOW_H);
-  grad.addColorStop(0, '#c8e6d4'); grad.addColorStop(1, '#a0c8b0');
+  grad.addColorStop(0, '#c4e6c9'); grad.addColorStop(0.5, '#aadcb0'); grad.addColorStop(1, '#8fcb98');
   ctx.fillStyle = grad; ctx.fillRect(0, 0, MEADOW_W, MEADOW_H);
-  ctx.strokeStyle = 'rgba(255,255,255,0.25)'; ctx.lineWidth = 1;
-  for (let x = 0; x <= MEADOW_W; x += 80) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,MEADOW_H); ctx.stroke(); }
-  for (let y = 0; y <= MEADOW_H; y += 80) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(MEADOW_W,y); ctx.stroke(); }
-  drawDecorations(ctx);
+
+  for (const p of PATCHES) { ctx.beginPath(); ctx.ellipse(p.x, p.y, p.r, p.r*0.66, 0, 0, Math.PI*2); ctx.fillStyle = p.c; ctx.fill(); }
+  drawPath(ctx);
+  drawCloudShadows(ctx, t);
+  drawPond(ctx, t);
+  for (const b of BUSHES) drawBush(ctx, b.x, b.y);
+  for (const tr of TREES) drawTree(ctx, tr.x, tr.y);
+  for (const g of GRASS) drawGrass(ctx, g.x, g.y, t);
+  for (const f of FLOWERS) drawFlower(ctx, f.x, f.y, f.c, t);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.font = '20px serif';
+  for (const m of MUSHROOMS) ctx.fillText('\u{1f344}', m.x, m.y);
+
   for (const [, u] of state.users) drawAvatar(ctx, u, u.id === me.id);
+  ctx.restore();
+
+  // screen-space ambience: floating pollen + warm light vignette
+  drawParticles(ctx, W, H, t);
+  const vig = ctx.createRadialGradient(W/2, H*0.4, Math.min(W,H)*0.2, W/2, H*0.5, Math.max(W,H)*0.75);
+  vig.addColorStop(0, 'rgba(255,245,210,0)'); vig.addColorStop(1, 'rgba(120,90,40,0.14)');
+  ctx.fillStyle = vig; ctx.fillRect(0, 0, W, H);
+}
+
+function drawPath(ctx) {
+  ctx.save(); ctx.lineCap = 'round';
+  ctx.strokeStyle = 'rgba(206,180,132,0.55)'; ctx.lineWidth = 38;
+  ctx.beginPath(); ctx.moveTo(-40, 210);
+  ctx.bezierCurveTo(300, 320, 360, 560, 700, 540);
+  ctx.bezierCurveTo(980, 520, 1040, 720, MEADOW_W + 40, 770); ctx.stroke();
+  ctx.strokeStyle = 'rgba(232,214,172,0.65)'; ctx.lineWidth = 20; ctx.stroke();
   ctx.restore();
 }
 
-const DECO = [
-  {x:120,y:100,t:'\u{1f333}'},{x:900,y:80,t:'\u{1f333}'},{x:400,y:700,t:'\u{1f333}'},
-  {x:1050,y:500,t:'\u{1f333}'},{x:200,y:600,t:'\u{1f333}'},{x:750,y:200,t:'\u{1f333}'},
-  {x:600,y:650,t:'\u{1f33f}'},{x:300,y:300,t:'\u{1f33f}'},{x:850,y:650,t:'\u{1f33f}'},
-  {x:150,y:450,t:'\u{1f338}'},{x:700,y:100,t:'\u{1f338}'},{x:950,y:350,t:'\u{1f338}'},
-  {x:500,y:350,t:'\u{1fa91}'},{x:680,y:420,t:'\u{1fa91}'}
-];
+function drawCloudShadows(ctx, t) {
+  const clouds = [{x:200,y:300,r:95},{x:700,y:520,r:130},{x:980,y:200,r:85},{x:430,y:680,r:100}];
+  for (const c of clouds) {
+    const cx = ((c.x + t*10) % (MEADOW_W + 320)) - 160;
+    ctx.beginPath(); ctx.ellipse(cx, c.y, c.r, c.r*0.5, 0, 0, Math.PI*2);
+    ctx.fillStyle = 'rgba(70,110,80,0.06)'; ctx.fill();
+  }
+}
 
-function drawDecorations(ctx) {
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.font = '32px serif';
-  for (const d of DECO) ctx.fillText(d.t, d.x, d.y);
+function drawPond(ctx, t) {
+  ctx.save();
+  ctx.beginPath(); ctx.ellipse(POND.x, POND.y, POND.rx+9, POND.ry+9, 0, 0, Math.PI*2);
+  ctx.fillStyle = 'rgba(90,150,120,0.30)'; ctx.fill();
+  const g = ctx.createRadialGradient(POND.x-24, POND.y-18, 12, POND.x, POND.y, POND.rx);
+  g.addColorStop(0, '#cdeef6'); g.addColorStop(1, '#7fc2dd');
+  ctx.beginPath(); ctx.ellipse(POND.x, POND.y, POND.rx, POND.ry, 0, 0, Math.PI*2);
+  ctx.fillStyle = g; ctx.fill();
+  const rp = (t * 18) % 64;
+  ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.lineWidth = 1.5;
+  ctx.globalAlpha = Math.max(0, 1 - rp/64);
+  ctx.beginPath(); ctx.ellipse(POND.x, POND.y, 22+rp, (22+rp)*0.62, 0, 0, Math.PI*2); ctx.stroke();
+  ctx.globalAlpha = 1;
+  for (const l of LILIES) { ctx.beginPath(); ctx.ellipse(POND.x+l.dx, POND.y+l.dy, 9, 6, 0.3, 0, Math.PI*2); ctx.fillStyle = '#5fae6b'; ctx.fill(); }
+  ctx.restore();
+}
+
+function drawTree(ctx, x, y) {
+  ctx.beginPath(); ctx.ellipse(x, y+34, 30, 11, 0, 0, Math.PI*2); ctx.fillStyle = 'rgba(60,90,60,0.22)'; ctx.fill();
+  ctx.fillStyle = '#9b6b43'; ctx.fillRect(x-5, y+8, 10, 28);
+  const layers = [{dx:-19,dy:0,r:23,c:'#56995f'},{dx:19,dy:0,r:23,c:'#56995f'},{dx:0,dy:-20,r:29,c:'#6fb074'},{dx:0,dy:-2,r:30,c:'#63a86b'}];
+  for (const L of layers) { ctx.beginPath(); ctx.arc(x+L.dx, y+L.dy, L.r, 0, Math.PI*2); ctx.fillStyle = L.c; ctx.fill(); }
+  ctx.beginPath(); ctx.arc(x-9, y-26, 9, 0, Math.PI*2); ctx.fillStyle = 'rgba(255,255,255,0.2)'; ctx.fill();
+}
+
+function drawBush(ctx, x, y) {
+  ctx.beginPath(); ctx.ellipse(x, y+10, 24, 8, 0, 0, Math.PI*2); ctx.fillStyle = 'rgba(60,90,60,0.18)'; ctx.fill();
+  for (const d of [{dx:-13,r:14},{dx:13,r:14},{dx:0,r:17}]) { ctx.beginPath(); ctx.arc(x+d.dx, y, d.r, 0, Math.PI*2); ctx.fillStyle = '#62a96a'; ctx.fill(); }
+}
+
+function drawFlower(ctx, x, y, c, t) {
+  const sway = Math.sin(t*1.4 + x*0.05) * 2;
+  ctx.save(); ctx.translate(x + sway, y);
+  ctx.strokeStyle = '#5a9470'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(0,2); ctx.lineTo(-sway, 11); ctx.stroke();
+  for (let i = 0; i < 5; i++) { const a = i*Math.PI*2/5; ctx.beginPath(); ctx.arc(Math.cos(a)*4.5, Math.sin(a)*4.5 - 2, 3, 0, Math.PI*2); ctx.fillStyle = c; ctx.fill(); }
+  ctx.beginPath(); ctx.arc(0, -2, 2.3, 0, Math.PI*2); ctx.fillStyle = '#fff3c4'; ctx.fill();
+  ctx.restore();
+}
+
+function drawGrass(ctx, x, y, t) {
+  const sway = Math.sin(t*2 + x*0.03);
+  ctx.strokeStyle = '#5a9470'; ctx.lineWidth = 2; ctx.lineCap = 'round';
+  for (let i = -1; i <= 1; i++) { ctx.beginPath(); ctx.moveTo(x+i*4, y); ctx.quadraticCurveTo(x+i*4+sway*3, y-8, x+i*4+sway*6, y-15); ctx.stroke(); }
+}
+
+function drawParticles(ctx, W, H, t) {
+  for (let i = 0; i < 20; i++) {
+    const px = (i*137 + t*16 + Math.sin(t*0.6 + i)*45) % W;
+    const py = (i*83 + Math.sin(t*0.9 + i*1.3)*28 + t*5) % H;
+    ctx.beginPath(); ctx.arc(px, py, 1.5 + Math.sin(t + i)*0.6, 0, Math.PI*2);
+    ctx.fillStyle = 'rgba(255,250,200,0.5)'; ctx.fill();
+  }
 }
 
 function drawAvatar(ctx, u, isMe) {
@@ -357,16 +456,24 @@ $('popover-close-btn').addEventListener('click', () => profilePop.classList.add(
 
 // ── Zoho Meeting quick-start ────────────────────────────────────────────
 $('quick-meet-btn').addEventListener('click', async () => {
+  const btn = $('quick-meet-btn');
+  const original = btn.textContent;
+  btn.disabled = true; btn.textContent = '⏳ Creating meeting…';
   try {
-    const res = await fetch('/api/zoho/start-meeting', { method: 'POST' });
+    const res = await fetch('/api/meet/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topic: 'Quick Meet — ' + (state.me?.name || 'Commons') })
+    });
     const data = await res.json();
-    if (data.link) {
-      window.open(data.link, '_blank');
-      if (state.socket && state.me) state.socket.emit('user:profile', { zohoMeetLink: data.link });
+    if (data.meetLink) {
+      window.open(data.meetLink, '_blank');
+      if (state.socket && state.me) state.socket.emit('user:profile', { zohoMeetLink: data.meetLink });
     } else {
-      alert('Could not start meeting: ' + (data.error || 'Unknown'));
+      alert('Could not start meeting: ' + (data.error || 'Zoho not configured'));
     }
   } catch (e) { alert('Error: ' + e.message); }
+  finally { btn.disabled = false; btn.textContent = original; }
 });
 
 // ── Helpers ───────────────────────────────────────────────────────────────────────────────
