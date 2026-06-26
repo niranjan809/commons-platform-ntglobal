@@ -5,10 +5,13 @@ const { Server } = require('socket.io');
 const cors = require('cors');
 const axios = require('axios');
 const path = require('path');
+const multer = require('multer');
+const notes = require('./notes');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 
 app.use(cors());
 app.use(express.json());
@@ -187,11 +190,12 @@ async function createZohoMeeting(topic, userToken) {
 }
 
 async function postSlackMessage(channel, text) {
-  if (!process.env.SLACK_BOT_TOKEN) return;
+  if (!process.env.SLACK_BOT_TOKEN) return null;
   try {
-    await axios.post('https://slack.com/api/chat.postMessage', { channel, text },
+    const r = await axios.post('https://slack.com/api/chat.postMessage', { channel, text },
       { headers: { Authorization: 'Bearer ' + process.env.SLACK_BOT_TOKEN } });
-  } catch (e) { console.error('Slack error:', e.message); }
+    return r.data;
+  } catch (e) { console.error('Slack error:', e.message); return null; }
 }
 
 async function updateSlackStatus(slackUsername, statusText, statusEmoji) {
@@ -458,6 +462,65 @@ app.post('/api/slack/events', express.raw({ type: 'application/json' }), (req, r
 app.get('/api/chat/history', (req, res) => {
   const ch = req.query.channel || 'general';
   res.json({ messages: chatHistory[ch] || [] });
+});
+
+// ── Notetaker: transcribe (hosted) and/or summarize a meeting, optionally to Slack
+app.get('/api/notes/config', (req, res) => {
+  const stt = notes.sttConfig();
+  res.json({
+    stt: stt ? stt.provider : null,
+    claude: !!process.env.ANTHROPIC_API_KEY,
+    slack: !!process.env.SLACK_BOT_TOKEN,
+  });
+});
+
+app.post('/api/notes/process', upload.single('audio'), async (req, res) => {
+  try {
+    const body = req.body || {};
+    let transcript = (body.transcript || '').trim();
+    let transcriptMeta = null;
+    if (!transcript && req.file) {
+      const out = await notes.transcribeAudio(req.file.buffer, req.file.originalname);
+      transcript = out.text;
+      transcriptMeta = { provider: out.provider, model: out.model };
+    }
+    if (!transcript) return res.status(400).json({ error: 'Provide an audio file or paste a transcript.' });
+
+    const attendees = (body.attendees || '').split(',').map(s => s.trim()).filter(Boolean);
+    // Roster from the people currently online: name -> Slack DM target.
+    const roster = {};
+    for (const [, u] of users) if (u.name) roster[u.name] = { slack_id: u.slackUsername || '' };
+
+    const mom = await notes.generateMoM(transcript, attendees.length ? attendees : Object.keys(roster));
+    const grouped = notes.groupByMember(mom.action_items, roster);
+
+    const wantSend = body.send === 'true' || body.send === true;
+    const channel = (body.channel || '#general').trim() || '#general';
+    const delivery = { attempted: wantSend, channel, summaryPosted: false, dms: [] };
+    if (wantSend) {
+      if (!process.env.SLACK_BOT_TOKEN) {
+        delivery.error = 'SLACK_BOT_TOKEN is not set on the server.';
+      } else {
+        const summaryText = '*Minutes of Meeting*\n\n' + (mom.summary || '') +
+          '\n\n*Action items:* ' + ((mom.action_items || []).length);
+        const r = await postSlackMessage(channel, summaryText);
+        delivery.summaryPosted = !!(r && r.ok);
+        if (r && !r.ok) delivery.summaryError = r.error;
+        for (const [member, tasks] of Object.entries(grouped)) {
+          const sid = roster[member] && roster[member].slack_id;
+          if (!sid) { delivery.dms.push({ member, ok: false, reason: 'no Slack id' }); continue; }
+          const dm = '*Your action items from the meeting:*\n' + tasks.map(t => '• ' + t).join('\n');
+          const r2 = await postSlackMessage(sid, dm);
+          delivery.dms.push({ member, ok: !!(r2 && r2.ok), error: r2 && r2.error });
+        }
+      }
+    }
+    res.json({ ok: true, transcript, transcriptMeta, mom, grouped, delivery });
+  } catch (e) {
+    const code = e.code === 'NO_STT_KEY' ? 400 : 500;
+    console.error('Notetaker error:', e.message);
+    res.status(code).json({ error: e.message });
+  }
 });
 
 const PORT = process.env.PORT || 3000;

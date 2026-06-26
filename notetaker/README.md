@@ -66,7 +66,7 @@ Each run writes to `output/`:
 
 - **Slack delivery** reuses the same `SLACK_BOT_TOKEN` your live app uses. The bot needs `chat:write` (channel post) and `im:write` (DM members).
 - **Member mapping** (`members.json`) mirrors the platform's member roster — each person's Slack user ID is how their tasks reach them.
-- Future: add an "Upload recording" button in the web app (`/api/notes/upload`) that calls this tool, so meeting hosts can run it from the office UI.
+- **In-app version:** the live web app now has an **AI Notetaker** panel (sidebar 📝) that does the same job for meeting hosts without the command line. Because the Railway dyno can't run local Whisper, the in-app path uses a **hosted** Whisper API (Groq or OpenAI, via `GROQ_API_KEY`/`OPENAI_API_KEY`) for transcription and the Claude API for the MoM (server route `POST /api/notes/process`, code in `notes.js`). This CLI remains the **local/offline** path — it keeps transcription fully on-device via faster-whisper.
 
 ## Limitations / notes
 

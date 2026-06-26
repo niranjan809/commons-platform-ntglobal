@@ -720,3 +720,97 @@ function renderAttendanceTable(log) {
     a.click();
   };
 }
+
+// ── AI Notetaker ────────────────────────────────────────────────────────────
+const notesModal = $('notes-modal');
+$('notes-open-btn').addEventListener('click', async () => {
+  notesModal.classList.remove('hidden');
+  if (!$('notes-attendees').value) {
+    const names = Array.from(state.users.values()).map(u => u.name).filter(Boolean);
+    $('notes-attendees').value = names.join(', ');
+  }
+  try {
+    const cfg = await (await fetch('/api/notes/config')).json();
+    const parts = [
+      cfg.stt ? '🎙️ Transcription: ' + cfg.stt : '🎙️ Transcription: not set — paste a transcript',
+      cfg.claude ? '🧠 Summaries: Claude' : '🧠 Summaries: basic (no Claude key)',
+      cfg.slack ? '💬 Slack: ready' : '💬 Slack: not set'
+    ];
+    $('notes-config-hint').innerHTML = parts.map(p => '<span>' + p + '</span>').join('');
+  } catch (e) { /* config hint is best-effort */ }
+});
+$('notes-close').addEventListener('click', () => notesModal.classList.add('hidden'));
+
+$('notes-run-btn').addEventListener('click', async () => {
+  const file = $('notes-audio').files[0];
+  const transcript = $('notes-transcript').value.trim();
+  if (!file && !transcript) { setNotesStatus('Add a recording or paste a transcript first.', 'err'); return; }
+  const fd = new FormData();
+  if (transcript) fd.append('transcript', transcript);
+  else fd.append('audio', file);
+  fd.append('attendees', $('notes-attendees').value);
+  fd.append('send', $('notes-send').checked ? 'true' : 'false');
+  fd.append('channel', $('notes-channel').value || '#general');
+
+  const btn = $('notes-run-btn'); btn.disabled = true;
+  $('notes-result').classList.add('hidden');
+  setNotesStatus(file && !transcript ? 'Transcribing & summarizing… (longer recordings take a bit)' : 'Summarizing…', 'busy');
+  try {
+    const res = await fetch('/api/notes/process', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!res.ok) { setNotesStatus(data.error || 'Failed to process.', 'err'); return; }
+    renderNotesResult(data);
+    setNotesStatus(data.delivery && data.delivery.attempted ? 'Done — see delivery status below.' : 'Done.', 'ok');
+  } catch (e) { setNotesStatus('Error: ' + e.message, 'err'); }
+  finally { btn.disabled = false; }
+});
+
+function setNotesStatus(text, kind) {
+  const el = $('notes-status');
+  el.className = 'notes-status notes-' + (kind || 'busy');
+  el.textContent = text;
+  el.classList.remove('hidden');
+}
+
+function renderNotesResult(data) {
+  const mom = data.mom || {};
+  let html = '';
+  html += '<div class="notes-section-title">Summary <span class="notes-engine">' + escHtml(mom._engine || '') + '</span></div>';
+  html += '<p class="notes-summary">' + escHtml(mom.summary || '') + '</p>';
+  if ((mom.decisions || []).length) {
+    html += '<div class="notes-section-title">Decisions</div><ul class="notes-list">';
+    for (const d of mom.decisions) html += '<li>' + escHtml(d) + '</li>';
+    html += '</ul>';
+  }
+  html += '<div class="notes-section-title">Action items</div>';
+  const items = mom.action_items || [];
+  if (items.length) {
+    html += '<table class="notes-table"><thead><tr><th>Owner</th><th>Task</th><th>Due</th></tr></thead><tbody>';
+    for (const it of items) {
+      html += '<tr><td>' + escHtml(it.owner || 'Unassigned') + '</td><td>' + escHtml(it.task || '') +
+              '</td><td>' + escHtml(it.due || '—') + '</td></tr>';
+    }
+    html += '</tbody></table>';
+  } else {
+    html += '<p class="notes-dim">No action items detected.</p>';
+  }
+  const d = data.delivery || {};
+  if (d.attempted) {
+    if (d.error) {
+      html += '<div class="notes-deliver err">Slack: ' + escHtml(d.error) + '</div>';
+    } else {
+      const summary = 'Slack summary → ' + escHtml(d.channel) + ': ' +
+        (d.summaryPosted ? 'posted ✓' : 'failed' + (d.summaryError ? ' (' + escHtml(d.summaryError) + ')' : ''));
+      const dms = (d.dms || []).map(x => escHtml(x.member) + ': ' +
+        (x.ok ? 'DM ✓' : 'skipped' + (x.reason ? ' (' + escHtml(x.reason) + ')' : '') + (x.error ? ' (' + escHtml(x.error) + ')' : ''))).join(' · ');
+      html += '<div class="notes-deliver">' + summary + (dms ? '<br>' + dms : '') + '</div>';
+    }
+  }
+  if (data.transcriptMeta) {
+    html += '<div class="notes-dim notes-transmeta">Transcribed via ' + escHtml(data.transcriptMeta.provider) +
+            ' (' + escHtml(data.transcriptMeta.model) + ')</div>';
+  }
+  const el = $('notes-result');
+  el.innerHTML = html;
+  el.classList.remove('hidden');
+}
