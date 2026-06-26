@@ -33,6 +33,15 @@ const FILLER_RE = new RegExp(
 );
 function looksLikeFiller(text) { return !text || FILLER_RE.test(String(text).trim()); }
 
+// In-memory debug log (last 80 events) so we can inspect what the glasses sent:
+// what STT transcribed and what Mycroft answered. Exposed via GET /api/mycroft/log.
+const LOG = [];
+function logEvent(e) {
+  LOG.push(Object.assign({ ts: new Date().toISOString() }, e));
+  while (LOG.length > 80) LOG.shift();
+}
+function getLog() { return LOG; }
+
 function extractAnswer(data) {
   if (!data || typeof data !== 'object') return '';
   for (const k of ['text', 'response', 'answer', 'reply']) {
@@ -59,13 +68,15 @@ async function askOnce(message) {
     const status = (data.status || (resp.ok ? 'success' : 'error')).toLowerCase();
     const text = status === 'success' ? extractAnswer(data) : '';
     const final = status === 'success' && !!text && !looksLikeFiller(text);
+    logEvent({ kind: 'ask', q: String(message).slice(0, 140), status, final, text: text.slice(0, 200) });
     return { status, final, text };
   } catch (err) {
     const aborted = err && err.name === 'AbortError';
+    logEvent({ kind: 'ask', q: String(message).slice(0, 140), status: aborted ? 'timeout' : 'error', final: false, text: '' });
     return { status: aborted ? 'timeout' : 'error', final: false, text: '' };
   } finally {
     clearTimeout(timer);
   }
 }
 
-module.exports = { askOnce, looksLikeFiller };
+module.exports = { askOnce, looksLikeFiller, logEvent, getLog };
