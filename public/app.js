@@ -143,6 +143,10 @@ function bindSocket() {
     state.me = you; state.users.clear();
     users.forEach(u => state.users.set(u.id, u));
     state.users.set(you.id, you);
+    if (state.me.y < WALK_TOP) {                  // don't spawn up in the bay/skyline
+      state.me.y = WALK_TOP + 60 + Math.floor(Math.random() * 120);
+      s.emit('move', { x: Math.round(state.me.x), y: Math.round(state.me.y) });
+    }
     renderMemberList();
   });
   s.on('user:joined', u => { state.users.set(u.id, u); renderMemberList(); addSystemMsg(u.avatar + ' ' + u.name + ' joined'); });
@@ -269,7 +273,7 @@ function handleMovement(dt) {
   // instead of sticking, and never walk through trees, the pond, or teammates.
   const ox = state.me.x, oy = state.me.y;
   const clampX = x => Math.max(AVATAR_R, Math.min(MEADOW_W - AVATAR_R, x));
-  const clampY = y => Math.max(AVATAR_R, Math.min(MEADOW_H - AVATAR_R, y));
+  const clampY = y => Math.max(WALK_TOP, Math.min(MEADOW_H - AVATAR_R, y));
   const tryX = clampX(ox + vx);
   if (!intoSolid(ox, oy, tryX, oy)) state.me.x = tryX;
   const tryY = clampY(oy + vy);
@@ -297,7 +301,7 @@ function intoSolid(ox, oy, nx, ny) {
     const nd = Math.hypot(nx - cx, ny - cy);
     return nd < r && nd < Math.hypot(ox - cx, oy - cy);
   };
-  for (const t of TREES) if (deeper(t.x, t.y, 30)) return true;
+  for (const t of PALMS) if (deeper(t.x, t.y, 22)) return true;
   for (const b of BUSHES) if (deeper(b.x, b.y, 24)) return true;
   const pond = (px, py) => Math.hypot((px - POND.x) / POND.rx, (py - POND.y) / POND.ry);
   if (pond(nx, ny) < 1 && pond(nx, ny) < pond(ox, oy)) return true;
@@ -329,32 +333,40 @@ function onMeadowClick(e) {
   if (state.followId) { state.followId = null; updateFollowBanner(); }
   state.moveTarget = {
     x: Math.max(AVATAR_R, Math.min(MEADOW_W - AVATAR_R, wx)),
-    y: Math.max(AVATAR_R, Math.min(MEADOW_H - AVATAR_R, wy)),
+    y: Math.max(WALK_TOP, Math.min(MEADOW_H - AVATAR_R, wy)),
   };
   if (!moveHintHidden) hideMoveHint();
 }
 
-// ── Ghibli meadow scenery (deterministic positions so nothing flickers) ──────
-const PATCHES = [
-  {x:180,y:160,r:150,c:'rgba(120,190,130,0.32)'},{x:540,y:120,r:120,c:'rgba(160,214,168,0.30)'},
-  {x:1000,y:240,r:170,c:'rgba(120,190,130,0.28)'},{x:780,y:580,r:150,c:'rgba(160,214,168,0.26)'},
-  {x:300,y:660,r:140,c:'rgba(120,190,130,0.30)'},{x:1080,y:700,r:120,c:'rgba(160,214,168,0.28)'}
+// ── Scene: a Dubai-bay waterfront with Kerala palms, at dusk ─────────────────
+// Top strip (above WALK_TOP) is the scenic bay + skyline; avatars walk the
+// waterfront lawn below it. Positions are deterministic so nothing flickers.
+const WALK_TOP = 255;          // avatars can't wander into the bay/skyline
+const WATERLINE = 150;         // towers stand on this line; water below it
+// Dubai skyline silhouette: towers rise `h` px above the waterline; one Burj spire.
+const SKYLINE = [
+  {x:50,w:34,h:64},{x:96,w:26,h:104},{x:132,w:42,h:84},{x:184,w:24,h:128},{x:218,w:46,h:72},
+  {x:296,w:30,h:116},{x:336,w:52,h:90},{x:398,w:26,h:138},{x:438,w:40,h:80},
+  {x:566,w:30,h:150,burj:true},
+  {x:660,w:46,h:88},{x:714,w:26,h:132},{x:760,w:42,h:100},{x:822,w:30,h:150},{x:864,w:50,h:82},
+  {x:946,w:28,h:120},{x:986,w:46,h:92},{x:1042,w:26,h:140},{x:1086,w:40,h:84},{x:1136,w:34,h:112}
 ];
-const TREES = [{x:120,y:130},{x:910,y:95},{x:1090,y:470},{x:210,y:600},{x:770,y:210},{x:1130,y:720}];
-const BUSHES = [{x:340,y:90},{x:640,y:300},{x:980,y:600},{x:170,y:380}];
+const PALMS = [{x:120,y:560},{x:330,y:730},{x:1075,y:545},{x:905,y:735},{x:60,y:345},{x:1150,y:360}];
+const PATCHES = [
+  {x:240,y:420,r:150,c:'rgba(150,205,150,0.22)'},{x:760,y:470,r:170,c:'rgba(120,180,120,0.20)'},
+  {x:520,y:680,r:150,c:'rgba(150,205,150,0.20)'},{x:1020,y:660,r:140,c:'rgba(120,180,120,0.18)'}
+];
+const BUSHES = [{x:430,y:700},{x:780,y:580},{x:1010,y:690},{x:200,y:480}];
 const FLOWERS = [
-  {x:150,y:450,c:'#f6a5c0'},{x:700,y:110,c:'#ffd36b'},{x:950,y:360,c:'#c79bf0'},
-  {x:430,y:520,c:'#ff9a9a'},{x:620,y:680,c:'#ffd36b'},{x:840,y:470,c:'#f6a5c0'},
-  {x:260,y:300,c:'#c79bf0'},{x:1010,y:560,c:'#ff9a9a'},{x:540,y:250,c:'#ffd36b'},
-  {x:380,y:430,c:'#f6a5c0'},{x:880,y:160,c:'#c79bf0'}
+  {x:180,y:650,c:'#ffd36b'},{x:520,y:770,c:'#f6a5c0'},{x:980,y:770,c:'#ffd36b'},
+  {x:300,y:560,c:'#ff9a9a'},{x:850,y:660,c:'#ffd36b'},{x:1130,y:640,c:'#f6a5c0'}
 ];
 const GRASS = [
-  {x:340,y:200},{x:600,y:430},{x:820,y:300},{x:480,y:600},{x:700,y:540},{x:240,y:500},
-  {x:920,y:620},{x:1020,y:180},{x:160,y:280},{x:780,y:680},{x:450,y:160},{x:1080,y:380}
+  {x:260,y:690},{x:600,y:560},{x:700,y:710},{x:880,y:610},{x:1080,y:720},{x:160,y:580},
+  {x:480,y:650},{x:980,y:540},{x:380,y:770},{x:760,y:770}
 ];
-const MUSHROOMS = [{x:280,y:430},{x:890,y:540},{x:560,y:170}];
-const POND = { x:520, y:390, rx:130, ry:82 };
-const LILIES = [{dx:-40,dy:-10},{dx:35,dy:20},{dx:10,dy:-25}];
+const POND = { x:600, y:610, rx:150, ry:58 };          // foreground reflecting pool
+const LILIES = [{dx:-50,dy:-4},{dx:42,dy:12},{dx:0,dy:-16}];
 
 function drawMeadow() {
   const { ctx, canvas, me } = state;
@@ -374,30 +386,110 @@ function drawMeadow() {
   ctx.translate(offX, offY);
   ctx.scale(scale, scale);
 
-  // base meadow gradient (soft, layered greens)
-  const grad = ctx.createLinearGradient(0, 0, 0, MEADOW_H);
-  grad.addColorStop(0, '#c4e6c9'); grad.addColorStop(0.5, '#aadcb0'); grad.addColorStop(1, '#8fcb98');
-  ctx.fillStyle = grad; ctx.fillRect(0, 0, MEADOW_W, MEADOW_H);
-
-  for (const p of PATCHES) { ctx.beginPath(); ctx.ellipse(p.x, p.y, p.r, p.r*0.66, 0, 0, Math.PI*2); ctx.fillStyle = p.c; ctx.fill(); }
-  drawPath(ctx);
-  drawCloudShadows(ctx, t);
+  drawSky(ctx, t);                                  // dusk gradient + sun
+  drawSkyline(ctx, t);                              // Dubai towers on the bay
+  drawBayWater(ctx, t);                             // water + reflection + promenade edge
+  drawGround(ctx);                                  // Kerala waterfront lawn
+  for (const p of PATCHES) { ctx.beginPath(); ctx.ellipse(p.x, p.y, p.r, p.r*0.6, 0, 0, Math.PI*2); ctx.fillStyle = p.c; ctx.fill(); }
   drawPond(ctx, t);
   for (const b of BUSHES) drawBush(ctx, b.x, b.y);
-  for (const tr of TREES) drawTree(ctx, tr.x, tr.y);
   for (const g of GRASS) drawGrass(ctx, g.x, g.y, t);
   for (const f of FLOWERS) drawFlower(ctx, f.x, f.y, f.c, t);
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.font = '20px serif';
-  for (const m of MUSHROOMS) ctx.fillText('\u{1f344}', m.x, m.y);
-
+  for (const p of PALMS) drawPalm(ctx, p.x, p.y, t);
   for (const [, u] of state.users) drawAvatar(ctx, u, u.id === me.id);
   ctx.restore();
 
-  // screen-space ambience: floating pollen + warm light vignette
+  // screen-space ambience: warm fireflies + dusk vignette
   drawParticles(ctx, W, H, t);
-  const vig = ctx.createRadialGradient(W/2, H*0.4, Math.min(W,H)*0.2, W/2, H*0.5, Math.max(W,H)*0.75);
-  vig.addColorStop(0, 'rgba(255,245,210,0)'); vig.addColorStop(1, 'rgba(120,90,40,0.14)');
+  const vig = ctx.createRadialGradient(W/2, H*0.42, Math.min(W,H)*0.25, W/2, H*0.5, Math.max(W,H)*0.8);
+  vig.addColorStop(0, 'rgba(255,226,180,0)'); vig.addColorStop(1, 'rgba(18,12,38,0.30)');
   ctx.fillStyle = vig; ctx.fillRect(0, 0, W, H);
+}
+
+function drawSky(ctx, t) {
+  const g = ctx.createLinearGradient(0, 0, 0, WATERLINE);
+  g.addColorStop(0, '#1e2a55'); g.addColorStop(0.45, '#5b4a86'); g.addColorStop(0.78, '#c9789a'); g.addColorStop(1, '#f6c07e');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, MEADOW_W, WATERLINE);
+  const sx = 600, sy = WATERLINE - 4;
+  const sun = ctx.createRadialGradient(sx, sy, 4, sx, sy, 160);
+  sun.addColorStop(0, 'rgba(255,240,205,0.95)'); sun.addColorStop(0.5, 'rgba(255,200,140,0.35)'); sun.addColorStop(1, 'rgba(255,200,140,0)');
+  ctx.fillStyle = sun; ctx.fillRect(0, 0, MEADOW_W, WATERLINE + 40);
+  ctx.beginPath(); ctx.arc(sx, sy, 24, 0, Math.PI * 2); ctx.fillStyle = 'rgba(255,247,220,0.95)'; ctx.fill();
+}
+
+function drawSkyline(ctx, t) {
+  for (const b of SKYLINE) {
+    const topY = WATERLINE - b.h;
+    if (b.burj) {
+      ctx.beginPath();
+      ctx.moveTo(b.x, WATERLINE);
+      ctx.lineTo(b.x + b.w * 0.5, topY - 30);
+      ctx.lineTo(b.x + b.w, WATERLINE);
+      ctx.closePath();
+      ctx.fillStyle = '#37305a'; ctx.fill();
+    } else {
+      const g = ctx.createLinearGradient(0, topY, 0, WATERLINE);
+      g.addColorStop(0, '#473d66'); g.addColorStop(1, '#2f2949');
+      ctx.fillStyle = g; ctx.fillRect(b.x, topY, b.w, b.h);
+    }
+  }
+  ctx.fillStyle = 'rgba(255,206,132,0.55)';   // warm window lights
+  for (const b of SKYLINE) {
+    if (b.burj) continue;
+    const cols = Math.max(1, Math.floor(b.w / 10));
+    const rows = Math.max(1, Math.floor(b.h / 16));
+    for (let c = 0; c < cols; c++) for (let r = 0; r < rows; r++) {
+      if (((c * 7 + r * 13 + b.x) % 5) === 0) ctx.fillRect(b.x + 4 + c * 9, WATERLINE - b.h + 8 + r * 15, 3, 4);
+    }
+  }
+}
+
+function drawBayWater(ctx, t) {
+  const g = ctx.createLinearGradient(0, WATERLINE, 0, WALK_TOP + 12);
+  g.addColorStop(0, '#3a6f7e'); g.addColorStop(1, '#1f4f5b');
+  ctx.fillStyle = g; ctx.fillRect(0, WATERLINE, MEADOW_W, (WALK_TOP + 12) - WATERLINE);
+  ctx.save(); ctx.globalAlpha = 0.16; ctx.fillStyle = '#cfe8ec';   // skyline reflection
+  for (const b of SKYLINE) {
+    if (b.burj) continue;
+    const h = Math.min(b.h * 0.5, WALK_TOP - WATERLINE - 4);
+    ctx.fillRect(b.x + Math.sin(t * 1.5 + b.x) * 1.2, WATERLINE, b.w, h);
+  }
+  ctx.restore();
+  ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = 1.5;
+  for (let i = 0; i < 4; i++) {
+    const y = WATERLINE + 16 + i * 20;
+    ctx.beginPath();
+    for (let x = 0; x <= MEADOW_W; x += 20) { const yy = y + Math.sin(x * 0.03 + t * 1.2 + i) * 2; x === 0 ? ctx.moveTo(x, yy) : ctx.lineTo(x, yy); }
+    ctx.stroke();
+  }
+  const edge = ctx.createLinearGradient(0, WALK_TOP - 8, 0, WALK_TOP + 22);
+  edge.addColorStop(0, '#e9d3a0'); edge.addColorStop(1, '#cdb277');
+  ctx.fillStyle = edge; ctx.fillRect(0, WALK_TOP - 6, MEADOW_W, 26);
+}
+
+function drawGround(ctx) {
+  const g = ctx.createLinearGradient(0, WALK_TOP + 14, 0, MEADOW_H);
+  g.addColorStop(0, '#7cc077'); g.addColorStop(0.5, '#58a05d'); g.addColorStop(1, '#3d7a47');
+  ctx.fillStyle = g; ctx.fillRect(0, WALK_TOP + 14, MEADOW_W, MEADOW_H - (WALK_TOP + 14));
+}
+
+function drawPalm(ctx, x, y, t) {
+  const sway = Math.sin(t * 1.1 + x * 0.02) * 4;
+  ctx.beginPath(); ctx.ellipse(x, y + 6, 26, 8, 0, 0, Math.PI * 2); ctx.fillStyle = 'rgba(18,40,28,0.20)'; ctx.fill();
+  ctx.save(); ctx.lineCap = 'round';
+  ctx.strokeStyle = '#9c7b4f'; ctx.lineWidth = 8;
+  ctx.beginPath(); ctx.moveTo(x, y); ctx.quadraticCurveTo(x + 6, y - 46, x + sway, y - 82); ctx.stroke();
+  const tx = x + sway, ty = y - 82;
+  ctx.strokeStyle = '#3f8a4e'; ctx.lineWidth = 5;
+  for (let i = 0; i < 7; i++) {
+    const a = (-Math.PI * 0.5) + (i - 3) * 0.5;
+    ctx.beginPath(); ctx.moveTo(tx, ty);
+    ctx.quadraticCurveTo(tx + Math.cos(a) * 22, ty + Math.sin(a) * 22 - 6, tx + Math.cos(a) * 46, ty + Math.sin(a) * 46 + 8);
+    ctx.stroke();
+  }
+  ctx.fillStyle = '#6b4a2a';
+  ctx.beginPath(); ctx.arc(tx - 3, ty + 5, 4, 0, Math.PI * 2); ctx.arc(tx + 6, ty + 6, 4, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
 }
 
 function drawPath(ctx) {
@@ -465,12 +557,16 @@ function drawGrass(ctx, x, y, t) {
 }
 
 function drawParticles(ctx, W, H, t) {
-  for (let i = 0; i < 20; i++) {
-    const px = (i*137 + t*16 + Math.sin(t*0.6 + i)*45) % W;
-    const py = (i*83 + Math.sin(t*0.9 + i*1.3)*28 + t*5) % H;
-    ctx.beginPath(); ctx.arc(px, py, 1.5 + Math.sin(t + i)*0.6, 0, Math.PI*2);
-    ctx.fillStyle = 'rgba(255,250,200,0.5)'; ctx.fill();
+  ctx.save();
+  for (let i = 0; i < 18; i++) {
+    const px = (i*137 + t*14 + Math.sin(t*0.6 + i)*45) % W;
+    const py = (i*83 + Math.sin(t*0.9 + i*1.3)*26 + t*4) % H;
+    const glow = 0.45 + Math.sin(t*1.6 + i) * 0.35;        // gentle firefly pulse
+    ctx.beginPath(); ctx.arc(px, py, 1.6 + Math.sin(t + i)*0.7, 0, Math.PI*2);
+    ctx.fillStyle = 'rgba(255,214,140,' + Math.max(0.12, glow).toFixed(2) + ')';
+    ctx.shadowColor = 'rgba(255,200,120,0.8)'; ctx.shadowBlur = 6; ctx.fill();
   }
+  ctx.restore();
 }
 
 function drawAvatar(ctx, u, isMe) {
