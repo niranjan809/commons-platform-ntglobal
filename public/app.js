@@ -77,6 +77,7 @@ function joinGame(profile) {
   state.canvas = canvas; state.ctx = canvas.getContext('2d');
   resizeCanvas();
   window.addEventListener('resize', resizeCanvas);
+  canvas.addEventListener('click', onMeadowClick);
   state.socket = io();
   bindSocket();
   state.socket.emit('join', { name: profile.name, role: profile.role,
@@ -121,7 +122,10 @@ function bindSocket() {
     if (u) addSystemMsg(u.avatar + ' ' + u.name + ' left');
     state.users.delete(id); renderMemberList();
   });
-  s.on('user:moved', ({ id, x, y }) => { const u = state.users.get(id); if (u) { u.x = x; u.y = y; } });
+  s.on('user:moved', ({ id, x, y }) => {
+    if (id === state.me?.id) return;            // we are authoritative for our own position
+    const u = state.users.get(id); if (u) { u.x = x; u.y = y; }
+  });
   s.on('user:status', ({ id, status, breakType, breakReturnAt, breakNote }) => {
     const u = state.users.get(id);
     if (u) Object.assign(u, { status, breakType, breakReturnAt, breakNote });
@@ -188,18 +192,32 @@ function hideMoveHint() {
 }
 
 function handleMovement(dt) {
-  if (!state.me || isTyping()) return;
+  if (!state.me) return;
+  const step = SPEED * dt;
   let dx = 0, dy = 0;
   if (state.keys['ArrowLeft']  || state.keys['a']) dx -= 1;
   if (state.keys['ArrowRight'] || state.keys['d']) dx += 1;
   if (state.keys['ArrowUp']    || state.keys['w']) dy -= 1;
   if (state.keys['ArrowDown']  || state.keys['s']) dy += 1;
-  if (dx === 0 && dy === 0) return;
+
+  let moved = false;
+  if (dx !== 0 || dy !== 0) {
+    state.moveTarget = null;                                   // keyboard cancels click-to-move
+    if (dx && dy) { dx *= Math.SQRT1_2; dy *= Math.SQRT1_2; }  // diagonals shouldn't be faster
+    state.me.x += dx * step; state.me.y += dy * step;
+    moved = true;
+  } else if (state.moveTarget) {                               // walk toward a clicked point
+    const tx = state.moveTarget.x - state.me.x, ty = state.moveTarget.y - state.me.y;
+    const dist = Math.hypot(tx, ty);
+    if (dist <= step + 0.5) { state.me.x = state.moveTarget.x; state.me.y = state.moveTarget.y; state.moveTarget = null; }
+    else { state.me.x += (tx / dist) * step; state.me.y += (ty / dist) * step; }
+    moved = true;
+  }
+  if (!moved) return;
+
   if (!moveHintHidden) hideMoveHint();
-  if (dx && dy) { dx *= Math.SQRT1_2; dy *= Math.SQRT1_2; }  // diagonals shouldn't be faster
-  const step = SPEED * dt;
-  state.me.x = Math.max(AVATAR_R, Math.min(MEADOW_W - AVATAR_R, state.me.x + dx * step));
-  state.me.y = Math.max(AVATAR_R, Math.min(MEADOW_H - AVATAR_R, state.me.y + dy * step));
+  state.me.x = Math.max(AVATAR_R, Math.min(MEADOW_W - AVATAR_R, state.me.x));
+  state.me.y = Math.max(AVATAR_R, Math.min(MEADOW_H - AVATAR_R, state.me.y));
   const u = state.users.get(state.me.id);
   if (u) { u.x = state.me.x; u.y = state.me.y; }
   const now = Date.now();
@@ -207,6 +225,21 @@ function handleMovement(dt) {
     state.socket.emit('move', { x: Math.round(state.me.x), y: Math.round(state.me.y) });
     lastEmit = now;
   }
+}
+
+// Click anywhere on the meadow to walk there — a reliable input path that does
+// not depend on keyboard focus.
+function onMeadowClick(e) {
+  if (!state.me || !state.view) return;
+  const c = state.canvas, rect = c.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  const sx = (e.clientX - rect.left) * (c.width / rect.width);
+  const sy = (e.clientY - rect.top) * (c.height / rect.height);
+  state.moveTarget = {
+    x: Math.max(AVATAR_R, Math.min(MEADOW_W - AVATAR_R, (sx - state.view.offX) / state.view.scale)),
+    y: Math.max(AVATAR_R, Math.min(MEADOW_H - AVATAR_R, (sy - state.view.offY) / state.view.scale)),
+  };
+  if (!moveHintHidden) hideMoveHint();
 }
 
 // ── Ghibli meadow scenery (deterministic positions so nothing flickers) ──────
@@ -236,14 +269,18 @@ function drawMeadow() {
   if (!ctx || !me) return;
   const W = canvas.width, H = canvas.height;
   const t = (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000;
-  // Camera follows the avatar but clamps to the world bounds, so we never scroll
-  // past the meadow edge into empty space. If the viewport is wider/taller than
-  // the world, center the world instead of pinning it to a corner.
-  const camX = W >= MEADOW_W ? (MEADOW_W - W) / 2 : Math.max(0, Math.min(MEADOW_W - W, me.x - W/2));
-  const camY = H >= MEADOW_H ? (MEADOW_H - H) / 2 : Math.max(0, Math.min(MEADOW_H - H, me.y - H/2));
+  // Fit the whole 1200x800 meadow into the canvas (uniform scale, centered) — no
+  // scrolling camera, so the avatar always stays on screen and visibly walks
+  // around instead of being pinned to the centre while the background scrolls.
+  const scale = Math.min(W / MEADOW_W, H / MEADOW_H);
+  const offX = (W - MEADOW_W * scale) / 2;
+  const offY = (H - MEADOW_H * scale) / 2;
+  state.view = { scale, offX, offY };
   ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#8fcb98'; ctx.fillRect(0, 0, W, H);   // letterbox backdrop
   ctx.save();
-  ctx.translate(-camX, -camY);
+  ctx.translate(offX, offY);
+  ctx.scale(scale, scale);
 
   // base meadow gradient (soft, layered greens)
   const grad = ctx.createLinearGradient(0, 0, 0, MEADOW_H);
