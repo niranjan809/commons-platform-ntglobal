@@ -272,6 +272,19 @@
   </div>
 </div>
 
+<!-- Quick 1:1 meeting picker (H) -->
+<div id="meet-picker" class="search-modal hidden">
+  <div class="search-panel">
+    <div class="search-box">
+      <span class="search-ico">👥</span>
+      <input id="meet-picker-input" type="text" autocomplete="off" placeholder="Start a 1:1 — pick a teammate…" />
+      <button id="meet-picker-close" class="search-esc">esc</button>
+    </div>
+    <div id="meet-picker-results" class="search-results"></div>
+    <div class="search-foot">Opens a private chat and a Zoho 1:1 link for just the two of you</div>
+  </div>
+</div>
+
 <!-- Universal search (Ctrl / ⌘ K) -->
 <div id="search-modal" class="search-modal hidden">
   <div class="search-panel">
@@ -305,6 +318,8 @@
         <p>Click <b>⚡ Instant meeting</b> — a Zoho meeting is created, opens for you, and the join link is dropped into the current chat channel (and Slack) so anyone can join in one click. You can also just <b>walk up to a teammate</b>: when your avatars get close, a meeting link is created for both of you automatically.</p></details>
       <details><summary>💬 Chat &amp; Slack</summary>
         <p>Chat in <b>#general / #random / #team</b>. Every message you send is mirrored to the matching <b>Slack</b> channel automatically, and Slack replies appear here — no extra steps. Use the search box in the chat header to filter the current channel.</p></details>
+      <details><summary>⌨️ Keyboard shortcuts</summary>
+        <p><b>G</b> start a group meeting · <b>J</b> join the meeting with whoever's nearby · <b>H</b> quick 1:1 with a teammate · <b>M</b> message your last DM · <b>X</b> cycle your status · <b>N</b> notetaker · <b>F</b> follow the open card · <b>?</b> this help · <b>Ctrl/⌘ K</b> search · <b>Esc</b> close. (Shortcuts pause while you're typing.)</p></details>
       <details><summary>🔍 Search everything</summary>
         <p>Press <b>Ctrl / ⌘ K</b> (or the 🔍 in the top-left) to search <b>people, messages across every channel, and channels</b> from one place. Click a result to open that person’s card or jump to that message.</p></details>
       <details><summary>👤 Profiles</summary>
