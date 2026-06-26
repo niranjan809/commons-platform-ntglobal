@@ -528,6 +528,18 @@ body {
 .admin-table td { padding: 7px 12px; border-bottom: 1px solid var(--green-pale); }
 .admin-table tr:hover td { background: var(--green-mist); }
 
+/* ─── Admin diagnostics ───────────────────────────────────────────────── */
+.admin-dim { font-size: 12px; color: var(--text-light); }
+.diag-result { padding: 6px 16px 4px; }
+.diag-row { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 4px 0; color: var(--text-dark); }
+.diag-row b { font-weight: 700; min-width: 96px; }
+.diag-dim { color: var(--text-light); font-size: 12px; }
+.diag-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.diag-dot.ok  { background: #48d077; }
+.diag-dot.err { background: #e07070; }
+.diag-dot.off { background: #ccc; }
+.diag-row.err { color: #b03030; }
+
 /* ─── AI Notetaker modal ──────────────────────────────────────────────── */
 .notes-inner { width: min(92vw, 640px); }
 .notes-body { padding: 16px 18px; overflow-y: auto; }

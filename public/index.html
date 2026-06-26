@@ -185,8 +185,16 @@
         <button id="admin-login-btn" class="btn-sm btn-primary">View Logs</button>
       </div>
       <div id="admin-content" class="hidden">
+        <!-- Integrations health -->
+        <div class="admin-section-label">🔌 Integrations</div>
+        <div class="admin-toolbar">
+          <button id="diag-btn" class="btn-sm btn-secondary">Check keys</button>
+          <span class="admin-dim">Live ping of Slack, Zoho, Claude & transcription</span>
+        </div>
+        <div id="diag-result" class="diag-result"></div>
+
         <!-- Live Users -->
-        <div class="admin-section-label">🟢 Live Users</div>
+        <div class="admin-section-label" style="margin-top:12px">🟢 Live Users</div>
         <div class="admin-toolbar">
           <span id="admin-live-count"></span>
           <button id="admin-reset-btn" class="btn-sm btn-danger">⚠ Reset Room</button>

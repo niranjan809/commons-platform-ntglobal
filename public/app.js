@@ -721,6 +721,35 @@ function renderAttendanceTable(log) {
   };
 }
 
+// ── Admin: integrations health check ─────────────────────────────────────────
+$('diag-btn').addEventListener('click', async () => {
+  $('diag-result').innerHTML = '<div class="diag-row">Checking…</div>';
+  try {
+    const r = await fetch('/api/admin/diagnostics?pwd=' + encodeURIComponent(adminPwd));
+    if (r.status === 401) { $('diag-result').innerHTML = '<div class="diag-row err">Wrong password</div>'; return; }
+    renderDiagnostics(await r.json());
+  } catch (e) { $('diag-result').innerHTML = '<div class="diag-row err">Error: ' + escHtml(e.message) + '</div>'; }
+});
+
+function renderDiagnostics(d) {
+  const line = (label, info) => {
+    if (!info || !info.set) {
+      return '<div class="diag-row"><span class="diag-dot off"></span><b>' + label + '</b> <span class="diag-dim">not configured</span></div>';
+    }
+    if (info.ok) {
+      let detail = 'ok';
+      if (label === 'Slack') detail = info.team ? (info.team + ' · ' + info.bot) : 'ok';
+      else if (label === 'Zoho') detail = info.org ? ('org ' + info.org + (info.email ? ' · ' + info.email : '')) : (info.note || 'ok');
+      else if (label === 'Claude') detail = info.models ? (info.models + ' models available') : 'ok';
+      else if (label === 'Transcription') detail = info.provider + ' · ' + info.model;
+      return '<div class="diag-row"><span class="diag-dot ok"></span><b>' + label + '</b> <span class="diag-dim">' + escHtml(detail) + '</span></div>';
+    }
+    return '<div class="diag-row"><span class="diag-dot err"></span><b>' + label + '</b> <span class="diag-dim">' + escHtml(info.error || 'failed') + '</span></div>';
+  };
+  $('diag-result').innerHTML =
+    line('Slack', d.slack) + line('Zoho', d.zoho) + line('Claude', d.anthropic) + line('Transcription', d.transcription);
+}
+
 // ── AI Notetaker ────────────────────────────────────────────────────────────
 const notesModal = $('notes-modal');
 $('notes-open-btn').addEventListener('click', async () => {

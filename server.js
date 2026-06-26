@@ -464,6 +464,70 @@ app.get('/api/chat/history', (req, res) => {
   res.json({ messages: chatHistory[ch] || [] });
 });
 
+// ── Admin: live health check of every integration's keys ──────────────────────
+app.get('/api/admin/diagnostics', async (req, res) => {
+  const pwd = req.query.pwd || req.headers['x-admin-pwd'];
+  const required = process.env.ADMIN_PASSWORD || 'commons-admin-2026';
+  if (pwd !== required) return res.status(401).json({ error: 'Wrong password' });
+  const out = {};
+
+  // Slack — auth.test (free)
+  if (!process.env.SLACK_BOT_TOKEN) out.slack = { set: false };
+  else {
+    try {
+      const r = await axios.post('https://slack.com/api/auth.test', {},
+        { headers: { Authorization: 'Bearer ' + process.env.SLACK_BOT_TOKEN }, timeout: 10000 });
+      out.slack = r.data.ok ? { set: true, ok: true, team: r.data.team, bot: r.data.user }
+                            : { set: true, ok: false, error: r.data.error };
+    } catch (e) { out.slack = { set: true, ok: false, error: e.message }; }
+  }
+
+  // Zoho — refresh the token, then userinfo
+  if (!process.env.ZOHO_REFRESH_TOKEN || !process.env.ZOHO_CLIENT_ID || !process.env.ZOHO_CLIENT_SECRET) {
+    out.zoho = { set: false };
+  } else {
+    try {
+      const tok = await refreshZohoToken();
+      if (!tok) out.zoho = { set: true, ok: false, error: 'token refresh failed — check client id/secret/refresh token' };
+      else {
+        try {
+          const info = await axios.get('https://accounts.zoho.in/oauth/v2/userinfo',
+            { headers: { Authorization: 'Zoho-oauthtoken ' + tok }, timeout: 10000 });
+          const d = info.data || {};
+          out.zoho = { set: true, ok: true, org: d.ZSOID || d.org_id || null, email: d.Email || d.email || null };
+        } catch (e2) { out.zoho = { set: true, ok: true, note: 'token refreshed; userinfo unavailable' }; }
+      }
+    } catch (e) { out.zoho = { set: true, ok: false, error: e.message }; }
+  }
+
+  // Claude — list models (free)
+  if (!process.env.ANTHROPIC_API_KEY) out.anthropic = { set: false };
+  else {
+    try {
+      const r = await axios.get('https://api.anthropic.com/v1/models',
+        { headers: { 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' }, timeout: 10000 });
+      out.anthropic = { set: true, ok: true, models: (r.data.data || []).length };
+    } catch (e) {
+      out.anthropic = { set: true, ok: false, error: (e.response && e.response.status) ? 'HTTP ' + e.response.status : e.message };
+    }
+  }
+
+  // Transcription — Groq/OpenAI models list (free)
+  const stt = notes.sttConfig();
+  if (!stt) out.transcription = { set: false };
+  else {
+    try {
+      const base = stt.provider === 'groq' ? 'https://api.groq.com/openai/v1/models' : 'https://api.openai.com/v1/models';
+      await axios.get(base, { headers: { Authorization: 'Bearer ' + stt.key }, timeout: 10000 });
+      out.transcription = { set: true, ok: true, provider: stt.provider, model: stt.model };
+    } catch (e) {
+      out.transcription = { set: true, ok: false, provider: stt.provider, error: (e.response && e.response.status) ? 'HTTP ' + e.response.status : e.message };
+    }
+  }
+
+  res.json(out);
+});
+
 // ── Notetaker: transcribe (hosted) and/or summarize a meeting, optionally to Slack
 app.get('/api/notes/config', (req, res) => {
   const stt = notes.sttConfig();
