@@ -94,8 +94,37 @@ function joinGame(profile) {
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) clearKeys(); else lastFrameTime = 0;
   });
+  // Is Slack actually wired up? Drive the composer hint honestly off real config.
+  fetch('/api/notes/config').then(r => r.json())
+    .then(cfg => { state.slackConnected = !!cfg.slack; updateSlackHint(); })
+    .catch(() => { updateSlackHint(); });
+  setupIdleAway();
   loop();
   setTimeout(hideMoveHint, 8000);
+}
+
+// Auto-flip to Away after inactivity so a green dot means "actually here now",
+// then back to Available on the next activity. Never overrides Busy/Break/manual Away.
+function setupIdleAway() {
+  const IDLE_MS = 5 * 60 * 1000;
+  let lastActivity = Date.now();
+  const onActivity = () => {
+    lastActivity = Date.now();
+    if (state.autoAway && state.me && state.me.status === 'offline') {
+      state.autoAway = false;
+      emitStatus('available', null, null);
+      if (statusSelect) statusSelect.value = 'available';
+    }
+  };
+  ['mousemove', 'keydown', 'mousedown', 'wheel', 'touchstart'].forEach(ev =>
+    document.addEventListener(ev, onActivity, { passive: true }));
+  setInterval(() => {
+    if (state.me && state.me.status === 'available' && Date.now() - lastActivity > IDLE_MS) {
+      state.autoAway = true;
+      emitStatus('offline', null, null);
+      if (statusSelect) statusSelect.value = 'offline';
+    }
+  }, 30000);
 }
 
 function resizeCanvas() {
@@ -144,6 +173,10 @@ function bindSocket() {
       if (!state.searchQuery || msg.text.toLowerCase().includes(state.searchQuery.toLowerCase())) {
         renderChatMsg(msg, state.searchQuery);
       }
+    } else {
+      state.unread = state.unread || {};
+      state.unread[msg.channel] = (state.unread[msg.channel] || 0) + 1;
+      renderUnread();
     }
   });
   s.on('proximity:meet', ({ with: other, meetLink }) => showProximityToast(other, meetLink));
@@ -235,9 +268,19 @@ function onMeadowClick(e) {
   if (!rect.width || !rect.height) return;
   const sx = (e.clientX - rect.left) * (c.width / rect.width);
   const sy = (e.clientY - rect.top) * (c.height / rect.height);
+  const wx = (sx - state.view.offX) / state.view.scale;
+  const wy = (sy - state.view.offY) / state.view.scale;
+  // Clicking on a teammate's avatar opens their card (Gather instinct), not a walk.
+  for (const u of state.users.values()) {
+    if (u.id === state.me.id) continue;
+    if (typeof u.x === 'number' && Math.hypot(u.x - wx, u.y - wy) <= AVATAR_R + 4) {
+      showProfilePopover(u, state.canvas);
+      return;
+    }
+  }
   state.moveTarget = {
-    x: Math.max(AVATAR_R, Math.min(MEADOW_W - AVATAR_R, (sx - state.view.offX) / state.view.scale)),
-    y: Math.max(AVATAR_R, Math.min(MEADOW_H - AVATAR_R, (sy - state.view.offY) / state.view.scale)),
+    x: Math.max(AVATAR_R, Math.min(MEADOW_W - AVATAR_R, wx)),
+    y: Math.max(AVATAR_R, Math.min(MEADOW_H - AVATAR_R, wy)),
   };
   if (!moveHintHidden) hideMoveHint();
 }
@@ -414,9 +457,17 @@ function drawAvatar(ctx, u, isMe) {
 }
 
 function renderMemberList() {
-  memberList.innerHTML = '';
   const order = { available:0, busy:1, break:2, offline:3 };
-  const sorted = Array.from(state.users.values()).sort((a,b) => (order[a.status]??4)-(order[b.status]??4));
+  const all = Array.from(state.users.values());
+  // glanceable tally (doubles as a filter)
+  const counts = { available:0, busy:0, break:0, offline:0 };
+  for (const u of all) { const s = u.status || 'available'; counts[s] = (counts[s] || 0) + 1; }
+  renderStatusTally(counts);
+  const filter = state.statusFilter;
+  const sorted = all
+    .filter(u => !filter || (u.status || 'available') === filter)
+    .sort((a,b) => (order[a.status]??4)-(order[b.status]??4));
+  memberList.innerHTML = '';
   for (const u of sorted) {
     const li = document.createElement('li');
     li.className = 'member-item'; li.dataset.id = u.id;
@@ -438,7 +489,24 @@ function renderMemberList() {
   }
 }
 
-setInterval(renderMemberList, 15000);
+function renderStatusTally(counts) {
+  const el = $('status-tally');
+  if (!el) return;
+  const defs = [['available','🟢'], ['busy','🔴'], ['break','⏸'], ['offline','⚫']];
+  el.innerHTML = defs.map(([k, emoji]) =>
+    '<button class="tally-chip' + (state.statusFilter === k ? ' active' : '') + '" data-st="' + k + '">' +
+    emoji + ' ' + (counts[k] || 0) + '</button>').join('');
+  el.querySelectorAll('.tally-chip').forEach(b => b.addEventListener('click', () => {
+    state.statusFilter = (state.statusFilter === b.dataset.st) ? null : b.dataset.st;
+    renderMemberList();
+  }));
+}
+
+// Refresh once a second while anyone is on a break so countdowns tick live;
+// otherwise the list is event-driven (join/leave/status), so no need to thrash.
+setInterval(() => {
+  if (Array.from(state.users.values()).some(u => u.status === 'break' && u.breakReturnAt)) renderMemberList();
+}, 1000);
 
 statusSelect.addEventListener('change', () => {
   const val = statusSelect.value;
@@ -467,10 +535,39 @@ document.querySelectorAll('.ch-btn').forEach(btn => {
     btn.classList.add('active'); state.currentChannel = btn.dataset.ch;
     chatChannName.textContent = btn.dataset.ch;
     chatInput.placeholder = 'Message #' + btn.dataset.ch + '...';
-    const sh = $('slack-hint-ch'); if (sh) sh.textContent = btn.dataset.ch;
+    if (state.unread) { state.unread[btn.dataset.ch] = 0; renderUnread(); }
+    updateSlackHint();
     refreshChatView();
   });
 });
+
+function renderUnread() {
+  document.querySelectorAll('.ch-btn').forEach(b => {
+    const n = (state.unread && state.unread[b.dataset.ch]) || 0;
+    let badge = b.querySelector('.ch-badge');
+    if (n > 0) {
+      if (!badge) { badge = document.createElement('span'); badge.className = 'ch-badge'; b.appendChild(badge); }
+      badge.textContent = n > 9 ? '9+' : String(n);
+      b.classList.add('has-unread');
+    } else {
+      if (badge) badge.remove();
+      b.classList.remove('has-unread');
+    }
+  });
+}
+
+// Honest Slack state — only claim mirroring when a bot token is actually configured.
+function updateSlackHint() {
+  const el = $('slack-hint');
+  if (!el) return;
+  if (state.slackConnected) {
+    el.innerHTML = '<span class="slack-dot"></span> Mirrors to <b>#' + escHtml(state.currentChannel) + '</b> on Slack';
+    el.classList.remove('slack-off');
+  } else {
+    el.innerHTML = '<span class="slack-dot slack-dot-off"></span> Slack not connected — messages stay in Commons';
+    el.classList.add('slack-off');
+  }
+}
 
 $('chat-send-btn').addEventListener('click', sendChat);
 chatInput.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); } });
@@ -527,6 +624,17 @@ function showProfilePopover(u, anchorEl) {
     : (u.activity ? ('Currently: ' + u.activity) : '');
   const links = $('pop-links');
   links.innerHTML = '';
+  if (state.me && u.id !== state.me.id && typeof u.x === 'number') {
+    const b = document.createElement('button');
+    b.className = 'pop-link pop-link-walk';
+    b.textContent = '🚶 Walk over here';
+    b.addEventListener('click', () => {
+      state.moveTarget = { x: u.x, y: u.y };
+      profilePop.classList.add('hidden');
+      if (!moveHintHidden) hideMoveHint();
+    });
+    links.appendChild(b);
+  }
   if (u.slackUsername) {
     const a = document.createElement('a');
     a.className = 'pop-link pop-link-slack';
@@ -541,7 +649,7 @@ function showProfilePopover(u, anchorEl) {
     a.textContent = 'Join Zoho Meeting';
     links.appendChild(a);
   }
-  if (!u.slackUsername && !u.zohoMeetLink) {
+  if (!links.children.length) {
     links.innerHTML = '<span style="font-size:12px;color:#aaa;">No links added</span>';
   }
   const rect = anchorEl.getBoundingClientRect();
@@ -588,7 +696,10 @@ $('quick-meet-btn').addEventListener('click', async () => {
 function getCountdown(isoStr) {
   if (!isoStr) return '';
   const diff = new Date(isoStr) - new Date();
-  if (diff <= 0) return '';
+  if (diff <= 0) {                       // overdue — stay visible instead of blanking
+    const over = Math.floor(-diff / 60000);
+    return over < 1 ? 'due' : over + 'm over';
+  }
   return Math.ceil(diff / 60000) + 'm';
 }
 

@@ -631,6 +631,40 @@ body {
 .help-body p { font-size: 13px; line-height: 1.55; color: var(--text-mid); padding: 0 0 10px 4px; margin: 0; }
 .help-body b { color: var(--text-dark); }
 
+/* ─── Status tally + filter chips ────────────────────────────────────────── */
+.status-tally { display: flex; gap: 5px; padding: 2px 14px 6px; flex-wrap: wrap; }
+.tally-chip {
+  display: inline-flex; align-items: center; gap: 3px;
+  background: rgba(255,255,255,0.10); color: var(--cream);
+  border: 1px solid transparent; border-radius: 20px;
+  padding: 2px 9px; font-size: 11px; font-weight: 700; font-family: inherit; cursor: pointer;
+}
+.tally-chip:hover { background: rgba(255,255,255,0.2); }
+.tally-chip.active { background: var(--cream); color: var(--green-dark); border-color: var(--cream); }
+
+/* ─── Chat unread badges ─────────────────────────────────────────────────── */
+.ch-btn { position: relative; }
+.ch-btn.has-unread { font-weight: 800; color: var(--green-dark); }
+.ch-badge {
+  display: inline-block; margin-left: 5px; min-width: 16px; height: 16px; line-height: 16px;
+  padding: 0 4px; border-radius: 8px; background: var(--red); color: #fff;
+  font-size: 10px; font-weight: 800; text-align: center; vertical-align: middle;
+}
+
+/* ─── Walk-to action in profile card ─────────────────────────────────────── */
+.pop-link-walk {
+  background: var(--amber); color: #3a2c08; border: none; width: 100%;
+  cursor: pointer; font-family: inherit; justify-content: center;
+}
+.pop-link-walk:hover { background: var(--amber-light); }
+
+/* ─── Honest Slack hint state ────────────────────────────────────────────── */
+.slack-hint.slack-off { color: var(--text-light); }
+.slack-dot-off { background: #c2c2c2 !important; }
+
+/* ─── Join-screen expectation note ───────────────────────────────────────── */
+.join-note { font-size: 12px; line-height: 1.5; color: var(--text-light); margin-top: 18px; }
+
 /* ─── Print: team overview ───────────────────────────────────────────────── */
 .print-area { position: absolute; left: -99999px; top: 0; width: 100%; }
 @media print {

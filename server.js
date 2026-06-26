@@ -93,6 +93,30 @@ function checkProximity(movedUser) {
 
 function huddleKey(a, b) { return [a, b].sort().join('::'); }
 
+// Promote a pending proximity pair into a real Zoho huddle only after they've
+// lingered together (DWELL_MS) — runs on a timer so it fires even when both
+// users stand still. A brief fly-by never reaches this and never books a meeting.
+const DWELL_MS = 2500;
+function publicUser(u) { return { ...u, socketId: undefined, zohoToken: undefined }; }
+setInterval(() => {
+  for (const [key, h] of huddles) {
+    if (h.created) continue;
+    const a = users.get(h.a), b = users.get(h.b);
+    if (!a || !b) { huddles.delete(key); continue; }
+    const dx = a.x - b.x, dy = a.y - b.y;
+    if (Math.sqrt(dx * dx + dy * dy) > PROXIMITY_RADIUS) { huddles.delete(key); continue; }
+    if (Date.now() - h.since < DWELL_MS) continue;
+    h.created = true;  // set first so a slow Zoho call can't double-fire
+    const meetToken = a.zohoToken || b.zohoToken || null;
+    createZohoMeeting('Huddle: ' + a.name + ' & ' + b.name, meetToken).then((meetLink) => {
+      if (huddles.get(key) !== h) return;  // pair drifted apart mid-create — skip the stale toast
+      h.zohoMeetLink = meetLink;
+      io.to(a.id).emit('proximity:meet', { with: publicUser(b), meetLink });
+      io.to(b.id).emit('proximity:meet', { with: publicUser(a), meetLink });
+    });
+  }
+}, 1000);
+
 async function refreshZohoToken() {
   if (!process.env.ZOHO_REFRESH_TOKEN || !process.env.ZOHO_CLIENT_ID || !process.env.ZOHO_CLIENT_SECRET) return null;
   try {
@@ -243,33 +267,24 @@ io.on('connection', (socket) => {
     for (const other of nearby) {
       const key = huddleKey(socket.id, other.id);
       if (!huddles.has(key)) {
-        huddles.set(key, { zohoMeetLink: null, createdAt: Date.now() });
-        const meetToken = user.zohoToken || other.zohoToken || null;
-        createZohoMeeting('Huddle: ' + user.name + ' & ' + other.name, meetToken).then((meetLink) => {
-          huddles.set(key, { zohoMeetLink: meetLink, createdAt: Date.now() });
-          io.to(socket.id).emit('proximity:meet', { with: other, meetLink });
-          io.to(other.id).emit('proximity:meet', { with: user, meetLink });
-          if (user.slackUsername) postSlackMessage(user.slackUsername,
-            'You are near *' + other.name + '* in the office -- Zoho huddle: ' + meetLink);
-          if (other.slackUsername) postSlackMessage(other.slackUsername,
-            'You are near *' + user.name + '* in the office -- Zoho huddle: ' + meetLink);
-        });
+        // Pending only: require a short dwell before booking a meeting, so brushing
+        // past someone doesn't auto-create a huddle or ping anyone. The sweep below
+        // promotes it once both have lingered together (handles standing still too).
+        huddles.set(key, { since: Date.now(), created: false, zohoMeetLink: null, a: socket.id, b: other.id });
       }
     }
 
-    for (const [key] of huddles) {
-      const parts = key.split('::');
-      if (parts[0] === socket.id || parts[1] === socket.id) {
-        const otherId = parts[0] === socket.id ? parts[1] : parts[0];
-        const otherUser = users.get(otherId);
-        if (otherUser) {
-          const dx = user.x - otherUser.x;
-          const dy = user.y - otherUser.y;
-          if (Math.sqrt(dx*dx + dy*dy) > PROXIMITY_RADIUS * 1.5) {
-            huddles.delete(key);
-            io.to(socket.id).emit('proximity:left', { with: otherUser });
-            io.to(otherId).emit('proximity:left', { with: user });
-          }
+    for (const [key, h] of huddles) {
+      if (h.a !== socket.id && h.b !== socket.id) continue;
+      const otherId = h.a === socket.id ? h.b : h.a;
+      const otherUser = users.get(otherId);
+      if (!otherUser) { huddles.delete(key); continue; }
+      const dx = user.x - otherUser.x, dy = user.y - otherUser.y;
+      if (Math.sqrt(dx*dx + dy*dy) > PROXIMITY_RADIUS * 1.5) {
+        huddles.delete(key);
+        if (h.created) {
+          io.to(socket.id).emit('proximity:left', { with: otherUser });
+          io.to(otherId).emit('proximity:left', { with: user });
         }
       }
     }
