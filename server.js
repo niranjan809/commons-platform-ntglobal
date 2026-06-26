@@ -612,12 +612,21 @@ app.post('/api/mycroft/transcribe',
       const buf = req.body;
       if (!buf || !buf.length) return res.json({ text: '', error: 'empty_body' });
       const out = await notes.transcribeAudio(buf, 'speech.wav');
+      mycroft.logEvent({ kind: 'stt', bytes: buf.length, text: (out.text || '').slice(0, 200) });
       res.json({ text: out.text });
     } catch (e) {
       console.error('Mycroft transcribe error:', e.message);
+      mycroft.logEvent({ kind: 'stt', bytes: (req.body && req.body.length) || 0, text: '', error: e.message });
       res.json({ text: '', error: e.message });
     }
   });
+
+// Debug log of recent glasses activity (STT transcriptions + Mycroft answers).
+// Lightly gated so it isn't fully public. GET /api/mycroft/log?key=g2debug
+app.get('/api/mycroft/log', (req, res) => {
+  if (req.query.key !== 'g2debug') return res.status(403).json({ error: 'forbidden' });
+  res.json({ entries: mycroft.getLog() });
+});
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
