@@ -639,6 +639,7 @@ function sendChat() {
 // Open a private 1:1 conversation in the chat panel (a "dm:<id>" pseudo-channel).
 function openDM(u) {
   state.dmWith = u;
+  state.lastDmId = u.id;                  // for the "M = message last person" shortcut
   state.currentChannel = 'dm:' + u.id;
   document.querySelectorAll('.ch-btn').forEach(b => b.classList.remove('active'));
   const hash = $('chat-hash'); if (hash) hash.style.display = 'none';
@@ -1222,11 +1223,98 @@ function printOverview() {
 }
 
 // ── Global shortcuts: Ctrl/⌘+K opens search, Esc closes overlays ────────────
+// ── Keyboard shortcuts ──────────────────────────────────────────────────────
+// Guarded so they never fire while typing, with modifiers, or on movement keys.
+function flashHint(text) {
+  const h = $('move-hint'); if (!h) return;
+  h.textContent = text; h.classList.remove('hidden', 'fade');
+  clearTimeout(flashHint._t);
+  flashHint._t = setTimeout(() => h.classList.add('fade'), 1800);
+}
+function cycleStatus() {
+  const cur = state.me ? state.me.status : 'available';
+  if (cur === 'break') { statusSelect.value = 'available'; breakComposer.classList.add('hidden'); emitStatus('available', null, null); return; }
+  const order = ['available', 'busy', 'break'];
+  const next = order[(order.indexOf(cur) + 1) % order.length];
+  statusSelect.value = next;
+  if (next === 'break') breakComposer.classList.remove('hidden');   // let them pick type + time
+  else emitStatus(next, null, null);
+}
+function joinNearestHuddle() {
+  const toast = $('proximity-toast'), link = $('toast-meet-link');
+  if (toast && !toast.classList.contains('hidden') && link && link.href && link.href !== location.href + '#' && link.style.display !== 'none' && link.getAttribute('href') !== '#') {
+    window.open(link.href, '_blank'); return true;
+  }
+  return false;
+}
+
 document.addEventListener('keydown', e => {
-  if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
-    e.preventDefault(); openSearch();
-  } else if (e.key === 'Escape') {
-    closeSearch();
-    $('help-modal').classList.add('hidden');
+  if (e.ctrlKey || e.metaKey) {
+    if (e.key === 'k' || e.key === 'K') { e.preventDefault(); openSearch(); }
+    return;
+  }
+  if (e.key === 'Escape') { closeSearch(); closeMeetPicker(); $('help-modal').classList.add('hidden'); return; }
+  if (e.key === '?') { if (!isTyping()) { e.preventDefault(); $('help-modal').classList.toggle('hidden'); } return; }
+  if (isTyping() || e.altKey || !state.me) return;
+  const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  if (MOVE_KEYS.has(k)) return;                       // movement owns WASD/arrows
+  switch (k) {
+    case 'g': e.preventDefault(); $('quick-meet-btn').click(); break;                  // group instant meeting
+    case 'j': e.preventDefault(); if (!joinNearestHuddle()) flashHint('No meeting nearby to join'); break;
+    case 'h': e.preventDefault(); openMeetPicker(); break;                             // quick 1:1 picker
+    case 'm': e.preventDefault(); {
+      const u = state.lastDmId && state.users.get(state.lastDmId);
+      if (u) { openDM(u); chatInput.focus(); } else flashHint('No recent DM — click a teammate to message them');
+    } break;
+    case 'n': e.preventDefault(); $('notes-open-btn').click(); break;                  // AI notetaker
+    case 'x': e.preventDefault(); cycleStatus(); break;                               // cycle your status
+    case 'f': e.preventDefault();
+      if (state.popoverTarget && state.me && state.popoverTarget.id !== state.me.id) {
+        state.followId = (state.followId === state.popoverTarget.id) ? null : state.popoverTarget.id;
+        updateFollowBanner();
+      } else flashHint('Open a teammate’s card, then F to follow'); break;
   }
 });
+
+// ── Quick 1:1 meeting picker (H) ────────────────────────────────────────────
+function openMeetPicker() {
+  const m = $('meet-picker'); if (!m) return;
+  m.classList.remove('hidden');
+  $('meet-picker-input').value = '';
+  renderMeetPicker('');
+  setTimeout(() => $('meet-picker-input').focus(), 30);
+}
+function closeMeetPicker() { const m = $('meet-picker'); if (m) m.classList.add('hidden'); }
+function renderMeetPicker(q) {
+  const ql = q.toLowerCase();
+  const list = Array.from(state.users.values())
+    .filter(u => u.id !== state.me?.id && (!ql || (u.name || '').toLowerCase().includes(ql)))
+    .sort((a, b) => (a.status === 'available' ? 0 : 1) - (b.status === 'available' ? 0 : 1));
+  const el = $('meet-picker-results');
+  el.innerHTML = list.length
+    ? list.map(u => '<button class="sr-item" data-id="' + u.id + '"><span class="sr-emoji">' + (u.avatar || '🐱') +
+        '</span><span class="sr-main">' + escHtml(u.name) + '<span class="sr-sub">' + escHtml(u.role || 'Team Member') +
+        '</span></span><span class="dot dot-' + (u.status || 'available') + '"></span></button>').join('')
+    : '<div class="sr-empty">No one else is online.</div>';
+  el.querySelectorAll('.sr-item').forEach(b => b.addEventListener('click', () => {
+    const u = state.users.get(b.dataset.id); if (u) start1on1(u);
+  }));
+}
+async function start1on1(u) {
+  closeMeetPicker();
+  openDM(u);                                  // private thread opens immediately, Zoho or not
+  try {
+    const res = await fetch('/api/meet/create', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topic: '1:1 — ' + (state.me?.name || 'Commons') + ' & ' + u.name }) });
+    const data = await res.json();
+    if (data.meetLink) {
+      window.open(data.meetLink, '_blank');
+      state.socket.emit('dm:send', { toId: u.id, text: '⚡ 1:1 meeting — join: ' + data.meetLink });
+    } else {
+      addSystemMsg('Opened a private chat with ' + u.name + ' (Zoho meeting not configured).');
+    }
+  } catch (err) { addSystemMsg('Could not start the meeting: ' + err.message); }
+}
+if ($('meet-picker-input')) $('meet-picker-input').addEventListener('input', () => renderMeetPicker($('meet-picker-input').value.trim()));
+if ($('meet-picker-close')) $('meet-picker-close').addEventListener('click', closeMeetPicker);
+if ($('meet-picker')) $('meet-picker').addEventListener('click', e => { if (e.target === $('meet-picker')) closeMeetPicker(); });
