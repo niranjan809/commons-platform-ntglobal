@@ -467,6 +467,7 @@ document.querySelectorAll('.ch-btn').forEach(btn => {
     btn.classList.add('active'); state.currentChannel = btn.dataset.ch;
     chatChannName.textContent = btn.dataset.ch;
     chatInput.placeholder = 'Message #' + btn.dataset.ch + '...';
+    const sh = $('slack-hint-ch'); if (sh) sh.textContent = btn.dataset.ch;
     refreshChatView();
   });
 });
@@ -551,26 +552,36 @@ function showProfilePopover(u, anchorEl) {
 
 $('popover-close-btn').addEventListener('click', () => profilePop.classList.add('hidden'));
 
-// ── Zoho Meeting quick-start ────────────────────────────────────────────
+// ── Instant meeting (Zoho) — one click: open for me + share the join link to the
+//    current channel (which mirrors to Slack) so the team joins in one click. ──
 $('quick-meet-btn').addEventListener('click', async () => {
   const btn = $('quick-meet-btn');
   const original = btn.textContent;
-  btn.disabled = true; btn.textContent = '⏳ Creating meeting…';
+  btn.disabled = true; btn.textContent = '⏳ Starting…';
+  const restore = (label, ms) => { btn.textContent = label; setTimeout(() => { btn.textContent = original; btn.disabled = false; }, ms); };
   try {
     const res = await fetch('/api/meet/create', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ topic: 'Quick Meet — ' + (state.me?.name || 'Commons') })
+      body: JSON.stringify({ topic: 'Instant meeting — ' + (state.me?.name || 'Commons') })
     });
     const data = await res.json();
     if (data.meetLink) {
-      window.open(data.meetLink, '_blank');
-      if (state.socket && state.me) state.socket.emit('user:profile', { zohoMeetLink: data.meetLink });
+      window.open(data.meetLink, '_blank');                       // open for me immediately
+      if (state.socket && state.me) {
+        state.socket.emit('user:profile', { zohoMeetLink: data.meetLink });
+        // share to the current channel -> everyone can one-click join, and it mirrors to Slack
+        state.socket.emit('chat:send', {
+          text: '⚡ ' + (state.me.name || 'Someone') + ' started an instant meeting — join: ' + data.meetLink,
+          channel: state.currentChannel
+        });
+      }
+      restore('✓ Meeting started', 2500);
     } else {
-      alert('Could not start meeting: ' + (data.error || 'Zoho not configured'));
+      addSystemMsg('Could not start meeting: ' + (data.error || 'Zoho not configured on the server'));
+      restore('✕ Zoho not configured', 2500);
     }
-  } catch (e) { alert('Error: ' + e.message); }
-  finally { btn.disabled = false; btn.textContent = original; }
+  } catch (e) { addSystemMsg('Meeting error: ' + e.message); restore('✕ Error', 2500); }
 });
 
 // ── Helpers ───────────────────────────────────────────────────────────────────────────────
@@ -880,3 +891,125 @@ function renderNotesResult(data) {
   el.innerHTML = html;
   el.classList.remove('hidden');
 }
+
+// ── Universal search — people · messages (all channels) · channels ──────────
+const searchModal = $('search-modal'), searchInput = $('search-input'), searchResults = $('search-results');
+const SEARCH_CHANNELS = ['general', 'random', 'team'];
+
+function openSearch() {
+  if (!state.me) return;
+  searchModal.classList.remove('hidden');
+  searchInput.value = '';
+  renderSearch('');
+  setTimeout(() => searchInput.focus(), 30);
+}
+function closeSearch() { searchModal.classList.add('hidden'); }
+function escAttr(s) { return escHtml(s).replace(/"/g, '&quot;'); }
+function switchChannel(ch) { const b = document.querySelector('.ch-btn[data-ch="' + ch + '"]'); if (b) b.click(); }
+
+function renderSearch(q) {
+  const ql = q.toLowerCase();
+  const out = [];
+
+  const people = Array.from(state.users.values()).filter(u =>
+    !ql || [u.name, u.role, u.team].filter(Boolean).some(s => s.toLowerCase().includes(ql))).slice(0, 8);
+  if (people.length) {
+    out.push('<div class="sr-group">People</div>');
+    for (const u of people) {
+      out.push('<button class="sr-item" data-kind="person" data-id="' + u.id + '">' +
+        '<span class="sr-emoji">' + (u.avatar || '🐱') + '</span>' +
+        '<span class="sr-main">' + escHtml(u.name) + '<span class="sr-sub">' +
+        escHtml(u.role || 'Team Member') + (u.team ? ' · ' + escHtml(u.team) : '') + '</span></span>' +
+        '<span class="dot dot-' + (u.status || 'available') + '"></span></button>');
+    }
+  }
+
+  if (ql) {
+    const msgs = [];
+    for (const ch of Object.keys(state.chatHistory)) {
+      for (const m of (state.chatHistory[ch] || [])) {
+        if (m.text && m.text.toLowerCase().includes(ql)) msgs.push(m);
+      }
+    }
+    msgs.sort((a, b) => new Date(b.ts) - new Date(a.ts));
+    if (msgs.length) {
+      out.push('<div class="sr-group">Messages</div>');
+      for (const m of msgs.slice(0, 8)) {
+        out.push('<button class="sr-item" data-kind="msg" data-ch="' + escAttr(m.channel) + '" data-q="' + escAttr(q) + '">' +
+          '<span class="sr-emoji">' + (m.avatar || '💬') + '</span>' +
+          '<span class="sr-main">' + escHtml(m.text).slice(0, 90) +
+          '<span class="sr-sub">' + escHtml(m.userName) + ' · #' + escHtml(m.channel) + '</span></span></button>');
+      }
+    }
+  }
+
+  const chans = SEARCH_CHANNELS.filter(c => !ql || c.includes(ql));
+  if (chans.length) {
+    out.push('<div class="sr-group">Channels</div>');
+    for (const c of chans) {
+      out.push('<button class="sr-item" data-kind="channel" data-ch="' + c + '"><span class="sr-emoji">#</span><span class="sr-main">' + c + '</span></button>');
+    }
+  }
+
+  searchResults.innerHTML = out.join('') || '<div class="sr-empty">No matches.</div>';
+  searchResults.querySelectorAll('.sr-item').forEach(el => el.addEventListener('click', () => onSearchPick(el.dataset)));
+}
+
+function onSearchPick(d) {
+  closeSearch();
+  if (d.kind === 'person') {
+    const u = state.users.get(d.id);
+    if (u) showProfilePopover(u, $('search-open-btn'));
+  } else {
+    switchChannel(d.ch);
+    if (d.kind === 'msg' && d.q) {
+      chatSearchEl.value = d.q; state.searchQuery = d.q;
+      chatSearchClear.classList.remove('hidden');
+      refreshChatView();
+    }
+  }
+}
+
+$('search-open-btn').addEventListener('click', openSearch);
+$('search-close').addEventListener('click', closeSearch);
+searchModal.addEventListener('click', e => { if (e.target === searchModal) closeSearch(); });
+searchInput.addEventListener('input', () => renderSearch(searchInput.value.trim()));
+
+// ── Help & FAQ ──────────────────────────────────────────────────────────────
+$('help-open-btn').addEventListener('click', () => $('help-modal').classList.remove('hidden'));
+$('help-close').addEventListener('click', () => $('help-modal').classList.add('hidden'));
+$('help-modal').addEventListener('click', e => { if (e.target === $('help-modal')) $('help-modal').classList.add('hidden'); });
+
+// ── Print: a clean team-overview snapshot ───────────────────────────────────
+$('help-print-btn').addEventListener('click', printOverview);
+function printOverview() {
+  const order = { available: 0, busy: 1, break: 2, offline: 3 };
+  const sorted = Array.from(state.users.values()).sort((a, b) => (order[a.status] ?? 4) - (order[b.status] ?? 4));
+  let rows = '';
+  for (const u of sorted) {
+    let status = STATUS_LABEL[u.status] || 'Available';
+    if (u.status === 'break' && u.breakType) {
+      const cd = u.breakReturnAt ? getCountdown(u.breakReturnAt) : '';
+      status = 'On ' + u.breakType + ' break' + (cd ? ' (back in ' + cd + ')' : '');
+    }
+    const note = (u.status === 'break' && u.breakNote) ? u.breakNote : (u.activity || '');
+    rows += '<tr><td>' + (u.avatar || '') + ' ' + escHtml(u.name) + '</td><td>' + escHtml(u.role || '') +
+            '</td><td>' + escHtml(u.team || '') + '</td><td>' + escHtml(status) + '</td><td>' + escHtml(note) + '</td></tr>';
+  }
+  $('print-area').innerHTML =
+    '<h1>Commons — team overview</h1>' +
+    '<p class="print-meta">' + sorted.length + ' online · generated ' + new Date().toLocaleString() + '</p>' +
+    '<table class="print-table"><thead><tr><th>Name</th><th>Role</th><th>Team</th><th>Status</th><th>Note / activity</th></tr></thead>' +
+    '<tbody>' + (rows || '<tr><td colspan="5">No one online.</td></tr>') + '</tbody></table>';
+  window.print();
+}
+
+// ── Global shortcuts: Ctrl/⌘+K opens search, Esc closes overlays ────────────
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
+    e.preventDefault(); openSearch();
+  } else if (e.key === 'Escape') {
+    closeSearch();
+    $('help-modal').classList.add('hidden');
+  }
+});

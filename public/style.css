@@ -575,3 +575,71 @@ body {
 .notes-deliver { margin-top: 12px; font-size: 12px; background: var(--green-mist); padding: 8px 10px; border-radius: 8px; color: var(--text-mid); line-height: 1.5; }
 .notes-deliver.err { background: #fde8e8; color: #b03030; }
 .notes-transmeta { margin-top: 8px; }
+
+/* ─── Header actions (search + help) ─────────────────────────────────────── */
+.sidebar-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.header-actions { display: flex; gap: 6px; }
+.hdr-btn {
+  background: rgba(255,255,255,0.12); border: none; cursor: pointer;
+  width: 28px; height: 28px; border-radius: 8px; font-size: 14px; line-height: 1;
+  display: flex; align-items: center; justify-content: center; color: var(--cream);
+}
+.hdr-btn:hover { background: rgba(255,255,255,0.24); }
+
+/* ─── Slack hint under composer ──────────────────────────────────────────── */
+.slack-hint { display: flex; align-items: center; gap: 6px; padding: 0 14px 10px; font-size: 11px; color: var(--text-light); }
+.slack-hint b { color: #4A154B; font-weight: 700; }
+.slack-dot { width: 8px; height: 8px; border-radius: 50%; background: #4A154B; flex-shrink: 0; }
+
+/* ─── Universal search palette ───────────────────────────────────────────── */
+.search-modal {
+  position: fixed; inset: 0; background: rgba(44,62,48,0.45);
+  display: flex; align-items: flex-start; justify-content: center; padding-top: 12vh; z-index: 3000;
+}
+.search-panel {
+  background: var(--cream); width: min(92vw, 560px); border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.3); overflow: hidden;
+  display: flex; flex-direction: column; max-height: 70vh;
+}
+.search-box { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--cream-dark); }
+.search-ico { font-size: 16px; }
+#search-input { flex: 1; border: none; background: transparent; font-family: inherit; font-size: 16px; color: var(--text-dark); outline: none; }
+.search-esc { border: 1px solid var(--green-pale); background: var(--green-mist); color: var(--text-light); border-radius: 6px; font-size: 11px; padding: 3px 7px; cursor: pointer; font-family: inherit; }
+.search-results { overflow-y: auto; padding: 6px; }
+.sr-group { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .6px; color: var(--text-light); padding: 8px 10px 4px; }
+.sr-item {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  background: none; border: none; cursor: pointer; padding: 8px 10px; border-radius: 8px;
+  font-family: inherit; color: var(--text-dark);
+}
+.sr-item:hover { background: var(--green-mist); }
+.sr-emoji { font-size: 18px; width: 22px; text-align: center; flex-shrink: 0; }
+.sr-main { flex: 1; min-width: 0; font-size: 14px; display: flex; flex-direction: column; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.sr-sub { font-size: 11px; color: var(--text-light); overflow: hidden; text-overflow: ellipsis; }
+.sr-empty { padding: 18px; text-align: center; color: var(--text-light); font-size: 13px; }
+.search-foot { padding: 8px 14px; border-top: 1px solid var(--cream-dark); font-size: 11px; color: var(--text-light); }
+
+/* ─── Help & FAQ ─────────────────────────────────────────────────────────── */
+.help-inner { width: min(92vw, 620px); max-height: 82vh; }
+.help-head-actions { display: flex; align-items: center; gap: 10px; }
+.help-body { padding: 14px 18px; overflow-y: auto; }
+.help-body details { border: 1px solid var(--green-pale); border-radius: 10px; padding: 2px 12px; margin-bottom: 8px; background: white; }
+.help-body summary { cursor: pointer; font-weight: 700; font-size: 14px; color: var(--green-dark); padding: 9px 0; list-style: none; }
+.help-body summary::-webkit-details-marker { display: none; }
+.help-body summary::before { content: '▸ '; color: var(--green-mid); }
+.help-body details[open] summary::before { content: '▾ '; }
+.help-body p { font-size: 13px; line-height: 1.55; color: var(--text-mid); padding: 0 0 10px 4px; margin: 0; }
+.help-body b { color: var(--text-dark); }
+
+/* ─── Print: team overview ───────────────────────────────────────────────── */
+.print-area { position: absolute; left: -99999px; top: 0; width: 100%; }
+@media print {
+  body * { visibility: hidden !important; }
+  #print-area, #print-area * { visibility: visible !important; }
+  #print-area { left: 0 !important; padding: 24px; font-family: 'Nunito', sans-serif; color: #111; }
+  .print-area h1 { font-size: 22px; margin-bottom: 4px; }
+  .print-meta { font-size: 12px; color: #555; margin-bottom: 16px; }
+  .print-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .print-table th, .print-table td { border: 1px solid #ccc; padding: 6px 10px; text-align: left; }
+  .print-table th { background: #eee; }
+}
