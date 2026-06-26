@@ -8,6 +8,7 @@ const path = require('path');
 const multer = require('multer');
 const notes = require('./notes');
 const mycroft = require('./mycroft');
+const crypto = require('crypto');
 
 const app = express();
 const server = http.createServer(app);
@@ -15,7 +16,37 @@ const io = new Server(server, { cors: { origin: '*' } });
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 
 app.use(cors());
-app.use(express.json());
+// Keep the raw body so the Slack Events webhook can verify the request signature.
+app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf; } }));
+
+// Collision-free monotonic message id (Date.now() alone collides within a ms).
+let _msgSeq = 0;
+function nextMsgId() { _msgSeq = (_msgSeq + 1) % 100000; return Date.now() * 100000 + _msgSeq; }
+
+// One source of truth for the Slack <-> channel mapping (both directions).
+function slackIdToChannel() {
+  const m = {};
+  if (process.env.SLACK_GENERAL_ID) m[process.env.SLACK_GENERAL_ID] = 'general';
+  if (process.env.SLACK_RANDOM_ID) m[process.env.SLACK_RANDOM_ID] = 'random';
+  if (process.env.SLACK_TEAM_ID) m[process.env.SLACK_TEAM_ID] = 'team';
+  return m;
+}
+function slackTargetFor(channel) {
+  const ids = { general: process.env.SLACK_GENERAL_ID, random: process.env.SLACK_RANDOM_ID, team: process.env.SLACK_TEAM_ID };
+  return ids[channel] || ('#' + channel);   // prefer the configured ID; fall back to #name
+}
+// Verify Slack's request signature (HMAC-SHA256 over 'v0:ts:rawBody'), with a 5-min replay window.
+function verifySlackSignature(req) {
+  const secret = process.env.SLACK_SIGNING_SECRET;
+  if (!secret) return false;
+  const ts = req.headers['x-slack-request-timestamp'];
+  const sig = req.headers['x-slack-signature'];
+  if (!ts || !sig) return false;
+  if (Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false;
+  const base = 'v0:' + ts + ':' + (req.rawBody ? req.rawBody.toString('utf8') : '');
+  const mine = 'v0=' + crypto.createHmac('sha256', secret).update(base).digest('hex');
+  try { return crypto.timingSafeEqual(Buffer.from(mine), Buffer.from(sig)); } catch { return false; }
+}
 
 // Zoho OAuth callback: Zoho redirects to root URL with ?code= (matches registered redirect URI)
 app.get('/', async (req, res, next) => {
@@ -235,8 +266,22 @@ async function postSlackMessage(channel, text) {
   try {
     const r = await axios.post('https://slack.com/api/chat.postMessage', { channel, text },
       { headers: { Authorization: 'Bearer ' + process.env.SLACK_BOT_TOKEN } });
+    if (r.data && !r.data.ok) console.error('Slack post failed (' + channel + '):', r.data.error);
     return r.data;
   } catch (e) { console.error('Slack error:', e.message); return null; }
+}
+
+// Open a DM channel with a Slack user ID, then post — the correct way to DM a member.
+async function postSlackDM(userId, text) {
+  if (!process.env.SLACK_BOT_TOKEN || !userId) return { ok: false, error: 'no_token_or_id' };
+  try {
+    const open = await axios.post('https://slack.com/api/conversations.open', { users: userId },
+      { headers: { Authorization: 'Bearer ' + process.env.SLACK_BOT_TOKEN } });
+    if (!open.data || !open.data.ok) return { ok: false, error: (open.data && open.data.error) || 'open_failed' };
+    const r = await axios.post('https://slack.com/api/chat.postMessage', { channel: open.data.channel.id, text },
+      { headers: { Authorization: 'Bearer ' + process.env.SLACK_BOT_TOKEN } });
+    return r.data;
+  } catch (e) { return { ok: false, error: e.message }; }
 }
 
 async function updateSlackStatus(slackUsername, statusText, statusEmoji) {
@@ -335,16 +380,17 @@ io.on('connection', (socket) => {
 
   socket.on('chat:send', ({ text, channel }) => {
     const user = users.get(socket.id);
-    if (!user || !text.trim()) return;
+    if (!user || typeof text !== 'string' || !text.trim()) return;
+    const ch = channel || 'general';
     const msg = {
-      id: Date.now(), userId: socket.id, userName: user.name,
-      avatar: user.avatar, color: user.color, text: text.trim(),
-      channel: channel || 'general', ts: new Date().toISOString()
+      id: nextMsgId(), userId: socket.id, userName: user.name,
+      avatar: user.avatar, color: user.color, text: text.trim().slice(0, 2000),
+      channel: ch, ts: new Date().toISOString()
     };
     storeChatMsg(msg);
     io.emit('chat:message', msg);
     if (process.env.SLACK_BOT_TOKEN) {
-      postSlackMessage('#' + (channel || 'general'), '*' + user.name + '*: ' + text.trim());
+      postSlackMessage(slackTargetFor(ch), '*' + user.name + '*: ' + msg.text);
     }
   });
 
@@ -356,7 +402,7 @@ io.on('connection', (socket) => {
     const user = users.get(socket.id);
     if (!user || !toId || !text || !text.trim()) return;
     const msg = {
-      id: Date.now(), fromId: socket.id, toId,
+      id: nextMsgId(), fromId: socket.id, toId,
       userName: user.name, avatar: user.avatar, color: user.color,
       text: text.trim().slice(0, 2000), ts: new Date().toISOString()
     };
@@ -489,25 +535,38 @@ app.get('/api/admin/attendance', (req, res) => {
   res.json({ log: attendanceLog.slice().reverse(), count: attendanceLog.length });
 });
 
-// Slack Events API webhook
-app.post('/api/slack/events', express.raw({ type: 'application/json' }), (req, res) => {
-  let body;
-  try { body = JSON.parse(req.body); } catch { return res.sendStatus(400); }
-  if (body.type === 'url_verification') return res.json({ challenge: body.challenge });
+// Slack Events API webhook — signature-verified; only the three mapped channels mirror in.
+app.post('/api/slack/events', (req, res) => {
+  const body = req.body || {};
+  if (body.type === 'url_verification') {
+    if (!verifySlackSignature(req)) return res.sendStatus(401);
+    return res.json({ challenge: body.challenge });
+  }
+  if (!verifySlackSignature(req)) return res.sendStatus(401);   // reject forged events
   if (body.event && body.event.type === 'message' && !body.event.subtype && !body.event.bot_id) {
     const evt = body.event;
-    const chMap = { [process.env.SLACK_GENERAL_ID||'']: 'general', [process.env.SLACK_RANDOM_ID||'']: 'random', [process.env.SLACK_TEAM_ID||'']: 'team' };
-    const channel = chMap[evt.channel] || 'general';
+    const channel = slackIdToChannel()[evt.channel];
+    if (!channel) return res.sendStatus(200);   // not one of our channels — drop, don't leak into #general
     const msg = {
-      id: Date.now(), userId: 'slack:' + evt.user,
+      id: nextMsgId(), userId: 'slack:' + evt.user,
       userName: evt.username || ('Slack/' + evt.user),
       avatar: '💬', color: '#4A154B',
-      text: evt.text || '', channel, ts: new Date().toISOString(), fromSlack: true
+      text: (evt.text || '').slice(0, 2000), channel, ts: new Date().toISOString(), fromSlack: true
     };
     storeChatMsg(msg);
     io.emit('chat:message', msg);
   }
   res.sendStatus(200);
+});
+
+// Admin: send a real Slack test message to confirm the bot token + channel work end-to-end.
+app.post('/api/slack/test', async (req, res) => {
+  const pwd = req.query.pwd || req.headers['x-admin-pwd'];
+  if (pwd !== (process.env.ADMIN_PASSWORD || 'commons-admin-2026')) return res.status(401).json({ error: 'Wrong password' });
+  if (!process.env.SLACK_BOT_TOKEN) return res.json({ ok: false, error: 'SLACK_BOT_TOKEN not set' });
+  const target = slackTargetFor(req.query.channel || 'general');
+  const r = await postSlackMessage(target, '✅ Commons Slack test — outbound mirroring works.');
+  res.json({ ok: !!(r && r.ok), target, error: r && r.error });
 });
 
 // Chat history endpoint
@@ -531,15 +590,19 @@ app.get('/api/admin/diagnostics', async (req, res) => {
   if (pwd !== required) return res.status(401).json({ error: 'Wrong password' });
   const out = {};
 
-  // Slack — auth.test (free)
-  if (!process.env.SLACK_BOT_TOKEN) out.slack = { set: false };
+  // Slack — auth.test (free) + report inbound/webhook readiness, not just token validity
+  const inbound = {
+    signingSecret: !!process.env.SLACK_SIGNING_SECRET,
+    channelIds: ['SLACK_GENERAL_ID', 'SLACK_RANDOM_ID', 'SLACK_TEAM_ID'].filter(k => process.env[k]).length,
+  };
+  if (!process.env.SLACK_BOT_TOKEN) out.slack = { set: false, inbound };
   else {
     try {
       const r = await axios.post('https://slack.com/api/auth.test', {},
         { headers: { Authorization: 'Bearer ' + process.env.SLACK_BOT_TOKEN }, timeout: 10000 });
-      out.slack = r.data.ok ? { set: true, ok: true, team: r.data.team, bot: r.data.user }
-                            : { set: true, ok: false, error: r.data.error };
-    } catch (e) { out.slack = { set: true, ok: false, error: e.message }; }
+      out.slack = r.data.ok ? { set: true, ok: true, team: r.data.team, bot: r.data.user, inbound }
+                            : { set: true, ok: false, error: r.data.error, inbound };
+    } catch (e) { out.slack = { set: true, ok: false, error: e.message, inbound }; }
   }
 
   // Zoho — refresh the token, then userinfo
@@ -627,14 +690,15 @@ app.post('/api/notes/process', upload.single('audio'), async (req, res) => {
       } else {
         const summaryText = '*Minutes of Meeting*\n\n' + (mom.summary || '') +
           '\n\n*Action items:* ' + ((mom.action_items || []).length);
-        const r = await postSlackMessage(channel, summaryText);
+        const r = await postSlackMessage(slackTargetFor((channel || 'general').replace(/^#/, '')), summaryText);
         delivery.summaryPosted = !!(r && r.ok);
         if (r && !r.ok) delivery.summaryError = r.error;
         for (const [member, tasks] of Object.entries(grouped)) {
           const sid = roster[member] && roster[member].slack_id;
           if (!sid) { delivery.dms.push({ member, ok: false, reason: 'no Slack id' }); continue; }
+          if (!/^[UW][A-Z0-9]{6,}$/.test(sid)) { delivery.dms.push({ member, ok: false, reason: 'not a Slack member ID (Uxxxx)' }); continue; }
           const dm = '*Your action items from the meeting:*\n' + tasks.map(t => '• ' + t).join('\n');
-          const r2 = await postSlackMessage(sid, dm);
+          const r2 = await postSlackDM(sid, dm);
           delivery.dms.push({ member, ok: !!(r2 && r2.ok), error: r2 && r2.error });
         }
       }

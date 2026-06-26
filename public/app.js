@@ -530,7 +530,7 @@ function renderMemberList() {
       sub = '';
     }
     li.innerHTML = '<span class="member-emoji">' + (u.avatar||'\u{1f431}') + '</span>' +
-      '<div class="member-info"><div class="member-name">' + u.name + isMe + '</div>' +
+      '<div class="member-info"><div class="member-name">' + escHtml(u.name) + isMe + '</div>' +
       (sub ? '<div class="member-sub">' + sub + '</div>' : '') + breakInfo + '</div>' +
       '<span class="dot dot-' + (u.status||'available') + '"></span>';
     li.addEventListener('click', () => showProfilePopover(u, li));
@@ -678,7 +678,7 @@ function renderChatMsg(msg, highlight) {
     : rawText;
   const slackBadge = msg.fromSlack ? '<span class="slack-badge">Slack</span>' : '';
   div.innerHTML = '<div class="msg-avatar">' + (msg.avatar||'\u{1f431}') + '</div>' +
-    '<div class="msg-body"><div class="msg-header"><span class="msg-name">' + msg.userName +
+    '<div class="msg-body"><div class="msg-header"><span class="msg-name">' + escHtml(msg.userName) +
     slackBadge + '</span><span class="msg-time">' + time + '</span></div>' +
     '<div class="msg-text">' + displayText + '</div></div>';
   chatMessages.appendChild(div);
@@ -782,7 +782,7 @@ $('quick-meet-btn').addEventListener('click', async () => {
     if (data.meetLink) {
       window.open(data.meetLink, '_blank');                       // open for me immediately
       if (state.socket && state.me) {
-        state.socket.emit('user:profile', { zohoMeetLink: data.meetLink });
+        state.socket.emit('profile:update', { zohoMeetLink: data.meetLink });
         // share to the current channel -> everyone can one-click join, and it mirrors to Slack
         state.socket.emit('chat:send', {
           text: '⚡ ' + (state.me.name || 'Someone') + ' started an instant meeting — join: ' + data.meetLink,
