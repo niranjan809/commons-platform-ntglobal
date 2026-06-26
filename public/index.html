@@ -107,7 +107,9 @@
         </select>
         <input id="break-custom-mins" type="number" min="1" max="480" placeholder="min"
                class="break-custom-input hidden" />
-        <button id="break-confirm-btn" class="btn-sm btn-primary">Set</button>
+        <input id="break-note" type="text" maxlength="80" autocomplete="off"
+               class="break-note-input" placeholder="Note (optional) — e.g. lunch with the team" />
+        <button id="break-confirm-btn" class="btn-sm btn-primary">Set break</button>
         <div id="break-return-display" class="break-return-display hidden">
           Back at <span id="break-return-time"></span>
           <button id="break-cancel-btn" class="btn-sm btn-danger">Cancel</button>
@@ -129,6 +131,11 @@
   <!-- Canvas meadow -->
   <main class="meadow-container">
     <canvas id="meadow-canvas"></canvas>
+
+    <!-- Movement hint (fades on first move) -->
+    <div id="move-hint" class="move-hint">
+      <span class="move-hint-keys">↑ ↓ ← →</span> or <b>WASD</b> to walk · click a teammate to open their card
+    </div>
 
     <!-- Proximity toast -->
     <div id="proximity-toast" class="proximity-toast hidden">

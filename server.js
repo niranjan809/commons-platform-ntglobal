@@ -213,7 +213,7 @@ io.on('connection', (socket) => {
       avatar: data.avatar || '🐱', color: data.color || '#7ec8a0',
       x: data.x || Math.floor(Math.random() * 600 + 100),
       y: data.y || Math.floor(Math.random() * 400 + 100),
-      status: 'available', breakType: null, breakReturnAt: null,
+      status: 'available', breakType: null, breakReturnAt: null, breakNote: null,
       slackUsername: data.slackUsername || '', zohoMeetLink: data.zohoMeetLink || '',
       zohoToken: data.zohoToken || null,
       activity: '', team: data.team || ''
@@ -276,10 +276,13 @@ io.on('connection', (socket) => {
     user.status = data.status;
     user.breakType = data.breakType || null;
     user.breakReturnAt = data.breakReturnAt || null;
-    logAttendance(data.status, user, data.breakType ? { breakType: data.breakType, breakReturnAt: data.breakReturnAt } : {});
-    io.emit('user:status', { id: socket.id, status: user.status, breakType: user.breakType, breakReturnAt: user.breakReturnAt });
+    user.breakNote = (data.breakNote || '').toString().trim().slice(0, 80) || null;
+    logAttendance(data.status, user, data.breakType ? { breakType: data.breakType, breakReturnAt: data.breakReturnAt, breakNote: user.breakNote } : {});
+    io.emit('user:status', { id: socket.id, status: user.status, breakType: user.breakType, breakReturnAt: user.breakReturnAt, breakNote: user.breakNote });
     const emojiMap = { available: ':large_green_circle:', busy: ':red_circle:', break: ':pause_button:', offline: ':black_circle:' };
-    const textMap = { available: 'In the office', busy: 'Busy', break: data.breakType ? 'On ' + data.breakType + ' break' : 'On break', offline: 'Away' };
+    let breakText = data.breakType ? 'On ' + data.breakType + ' break' : 'On break';
+    if (user.breakNote) breakText += ' — ' + user.breakNote;
+    const textMap = { available: 'In the office', busy: 'Busy', break: breakText, offline: 'Away' };
     updateSlackStatus(user.slackUsername, textMap[data.status] || '', emojiMap[data.status] || '');
   });
 

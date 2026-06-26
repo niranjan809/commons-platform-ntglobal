@@ -10,7 +10,8 @@ const state = {
   adminPwd: null
 };
 
-const SPEED = 3, AVATAR_R = 28, MEADOW_W = 1200, MEADOW_H = 800;
+const SPEED = 210, AVATAR_R = 28, MEADOW_W = 1200, MEADOW_H = 800; // SPEED in px/second
+const MOVE_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'w', 'a', 's', 'd']);
 
 const STATUS_COLOR = { available:'#48d077', busy:'#e07070', break:'#e8b86d', offline:'#888888' };
 const STATUS_LABEL = { available:'Available', busy:'Busy', break:'On Break', offline:'Away' };
@@ -83,12 +84,17 @@ function joinGame(profile) {
     zohoToken: profile.zohoToken || null });
   selfName.textContent = profile.name;
   selfAvatar.textContent = profile.avatar;
-  document.addEventListener('keydown', e => {
-    state.keys[e.key] = true;
-    if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) e.preventDefault();
+  document.addEventListener('keydown', onKeyDown);
+  document.addEventListener('keyup', onKeyUp);
+  // Resilience: never let a held key get "stuck" when focus/visibility is lost.
+  // A popup (Zoho/Meet login), tab switch, or alt-tab swallows the keyup otherwise,
+  // leaving the key logically "down" — the avatar then drifts or freezes in place.
+  window.addEventListener('blur', clearKeys);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) clearKeys(); else lastFrameTime = 0;
   });
-  document.addEventListener('keyup', e => { state.keys[e.key] = false; });
   loop();
+  setTimeout(hideMoveHint, 8000);
 }
 
 function resizeCanvas() {
@@ -116,10 +122,10 @@ function bindSocket() {
     state.users.delete(id); renderMemberList();
   });
   s.on('user:moved', ({ id, x, y }) => { const u = state.users.get(id); if (u) { u.x = x; u.y = y; } });
-  s.on('user:status', ({ id, status, breakType, breakReturnAt }) => {
+  s.on('user:status', ({ id, status, breakType, breakReturnAt, breakNote }) => {
     const u = state.users.get(id);
-    if (u) { u.status = status; u.breakType = breakType; u.breakReturnAt = breakReturnAt; }
-    if (id === state.me?.id) { Object.assign(state.me, { status, breakType, breakReturnAt }); updateSelfDot(); }
+    if (u) Object.assign(u, { status, breakType, breakReturnAt, breakNote });
+    if (id === state.me?.id) { Object.assign(state.me, { status, breakType, breakReturnAt, breakNote }); updateSelfDot(); }
     renderMemberList();
   });
   s.on('user:profile', ({ id, ...data }) => { const u = state.users.get(id); if (u) Object.assign(u, data); renderMemberList(); });
@@ -140,26 +146,66 @@ function bindSocket() {
   s.on('proximity:left', () => dismissToast());
 }
 
-let lastEmit = 0;
-function loop() {
-  handleMovement(); drawMeadow();
+let lastEmit = 0, lastFrameTime = 0;
+
+function loop(ts) {
+  const now = ts != null ? ts
+    : (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  let dt = lastFrameTime ? (now - lastFrameTime) / 1000 : 0.016;
+  lastFrameTime = now;
+  if (dt > 0.1) dt = 0.1;     // tab was backgrounded/lagging and just resumed — don't teleport
+  if (!(dt > 0)) dt = 0.016;  // guard against 0/NaN on the very first frame
+  handleMovement(dt);
+  drawMeadow();
   state.animFrame = requestAnimationFrame(loop);
 }
 
-function handleMovement() {
-  if (!state.me) return;
+// WASD is handled case-insensitively (Shift/CapsLock would otherwise strand an
+// uppercase key whose keyup never matches); arrow keys keep their full name.
+function keyName(e) { return e.key.length === 1 ? e.key.toLowerCase() : e.key; }
+function isTyping() {
+  const el = document.activeElement;
+  if (!el) return false;
+  return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' ||
+         el.tagName === 'SELECT' || el.isContentEditable;
+}
+function onKeyDown(e) {
+  if (isTyping()) return;          // cursor is in chat/search/admin — don't walk
+  const k = keyName(e);
+  if (!MOVE_KEYS.has(k)) return;
+  state.keys[k] = true;
+  e.preventDefault();              // stop arrows from scrolling the page
+}
+function onKeyUp(e) { state.keys[keyName(e)] = false; }
+function clearKeys() { for (const k in state.keys) state.keys[k] = false; }
+
+let moveHintHidden = false;
+function hideMoveHint() {
+  if (moveHintHidden) return;
+  moveHintHidden = true;
+  const h = document.getElementById('move-hint');
+  if (h) { h.classList.add('fade'); setTimeout(() => h.classList.add('hidden'), 700); }
+}
+
+function handleMovement(dt) {
+  if (!state.me || isTyping()) return;
   let dx = 0, dy = 0;
-  if (state.keys['ArrowLeft']  || state.keys['a']) dx -= SPEED;
-  if (state.keys['ArrowRight'] || state.keys['d']) dx += SPEED;
-  if (state.keys['ArrowUp']    || state.keys['w']) dy -= SPEED;
-  if (state.keys['ArrowDown']  || state.keys['s']) dy += SPEED;
-  if (dx !== 0 || dy !== 0) {
-    state.me.x = Math.max(AVATAR_R, Math.min(MEADOW_W - AVATAR_R, state.me.x + dx));
-    state.me.y = Math.max(AVATAR_R, Math.min(MEADOW_H - AVATAR_R, state.me.y + dy));
-    const u = state.users.get(state.me.id);
-    if (u) { u.x = state.me.x; u.y = state.me.y; }
-    const now = Date.now();
-    if (now - lastEmit > 40) { state.socket.emit('move', { x: state.me.x, y: state.me.y }); lastEmit = now; }
+  if (state.keys['ArrowLeft']  || state.keys['a']) dx -= 1;
+  if (state.keys['ArrowRight'] || state.keys['d']) dx += 1;
+  if (state.keys['ArrowUp']    || state.keys['w']) dy -= 1;
+  if (state.keys['ArrowDown']  || state.keys['s']) dy += 1;
+  if (dx === 0 && dy === 0) return;
+  if (!moveHintHidden) hideMoveHint();
+  if (dx && dy) { dx *= Math.SQRT1_2; dy *= Math.SQRT1_2; }  // diagonals shouldn't be faster
+  const step = SPEED * dt;
+  state.me.x = Math.max(AVATAR_R, Math.min(MEADOW_W - AVATAR_R, state.me.x + dx * step));
+  state.me.y = Math.max(AVATAR_R, Math.min(MEADOW_H - AVATAR_R, state.me.y + dy * step));
+  const u = state.users.get(state.me.id);
+  if (u) { u.x = state.me.x; u.y = state.me.y; }
+  const now = Date.now();
+  if (now - lastEmit > 40) {
+    state.socket.emit('move', { x: Math.round(state.me.x), y: Math.round(state.me.y) });
+    lastEmit = now;
   }
 }
 
@@ -190,7 +236,11 @@ function drawMeadow() {
   if (!ctx || !me) return;
   const W = canvas.width, H = canvas.height;
   const t = (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000;
-  const camX = me.x - W/2, camY = me.y - H/2;
+  // Camera follows the avatar but clamps to the world bounds, so we never scroll
+  // past the meadow edge into empty space. If the viewport is wider/taller than
+  // the world, center the world instead of pinning it to a corner.
+  const camX = W >= MEADOW_W ? (MEADOW_W - W) / 2 : Math.max(0, Math.min(MEADOW_W - W, me.x - W/2));
+  const camY = H >= MEADOW_H ? (MEADOW_H - H) / 2 : Math.max(0, Math.min(MEADOW_H - H, me.y - H/2));
   ctx.clearRect(0, 0, W, H);
   ctx.save();
   ctx.translate(-camX, -camY);
@@ -339,6 +389,7 @@ function renderMemberList() {
       const emoji = BREAK_EMOJI[u.breakType] || '⏸';
       const cd = u.breakReturnAt ? getCountdown(u.breakReturnAt) : '';
       breakInfo = '<span class="member-break-countdown">' + emoji + ' ' + u.breakType + (cd ? ' · ' + cd : '') + '</span>';
+      if (u.breakNote) breakInfo += '<span class="member-break-note">' + escHtml(u.breakNote) + '</span>';
       sub = '';
     }
     li.innerHTML = '<span class="member-emoji">' + (u.avatar||'\u{1f431}') + '</span>' +
@@ -359,12 +410,13 @@ statusSelect.addEventListener('change', () => {
   updateSelfDot();
 });
 
-function emitStatus(status, breakType, breakReturnAt) {
+function emitStatus(status, breakType, breakReturnAt, breakNote) {
   if (!state.socket || !state.me) return;
-  state.me.status = status; state.me.breakType = breakType; state.me.breakReturnAt = breakReturnAt;
+  breakNote = breakNote || null;
+  Object.assign(state.me, { status, breakType, breakReturnAt, breakNote });
   const u = state.users.get(state.me.id);
-  if (u) { u.status = status; u.breakType = breakType; u.breakReturnAt = breakReturnAt; }
-  state.socket.emit('status:set', { status, breakType, breakReturnAt });
+  if (u) Object.assign(u, { status, breakType, breakReturnAt, breakNote });
+  state.socket.emit('status:set', { status, breakType, breakReturnAt, breakNote });
   updateSelfDot(); renderMemberList();
 }
 
@@ -424,9 +476,17 @@ function showProfilePopover(u, anchorEl) {
   $('pop-avatar').textContent = u.avatar || '\u{1f431}';
   $('pop-name').textContent = u.name;
   $('pop-role').textContent = u.role || 'Team Member';
-  $('pop-status').textContent = STATUS_LABEL[u.status] || 'Available';
+  let statusTxt = STATUS_LABEL[u.status] || 'Available';
+  if (u.status === 'break' && u.breakType) {
+    const emoji = BREAK_EMOJI[u.breakType] || '⏸';
+    const cd = u.breakReturnAt ? getCountdown(u.breakReturnAt) : '';
+    statusTxt = emoji + ' On ' + u.breakType + ' break' + (cd ? ' · back in ' + cd : '');
+  }
+  $('pop-status').textContent = statusTxt;
   $('pop-team').textContent = u.team ? ('Team: ' + u.team) : '';
-  $('pop-activity').textContent = u.activity ? ('Currently: ' + u.activity) : '';
+  $('pop-activity').textContent = (u.status === 'break' && u.breakNote)
+    ? ('“' + u.breakNote + '”')
+    : (u.activity ? ('Currently: ' + u.activity) : '');
   const links = $('pop-links');
   links.innerHTML = '';
   if (u.slackUsername) {
@@ -547,7 +607,8 @@ $('break-confirm-btn').addEventListener('click', () => {
     if (!mins || mins < 1) { breakCustomInput.focus(); return; }
   }
   const returnAt = new Date(Date.now() + mins * 60000).toISOString();
-  emitStatus('break', type, returnAt);
+  const note = $('break-note').value.trim();
+  emitStatus('break', type, returnAt, note);
   const retTime = new Date(returnAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   breakReturnTimeEl.textContent = retTime;
   breakReturnDisplay.classList.remove('hidden');
@@ -558,6 +619,7 @@ breakCancelBtn.addEventListener('click', () => {
   $('status-select').value = 'available';
   breakComposer.classList.add('hidden');
   breakReturnDisplay.classList.add('hidden');
+  $('break-note').value = '';
 });
 
 setInterval(() => {
@@ -567,6 +629,7 @@ setInterval(() => {
       $('status-select').value = 'available';
       breakComposer.classList.add('hidden');
       breakReturnDisplay.classList.add('hidden');
+      $('break-note').value = '';
       addSystemMsg('Your break is over — you are back as Available');
     }
   }
@@ -638,7 +701,8 @@ function renderAttendanceTable(log) {
     const retTime = entry.breakReturnAt
       ? new Date(entry.breakReturnAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})
       : '';
-    const details = entry.breakType ? (entry.breakType + (retTime ? ' back at ' + retTime : '')) : '';
+    let details = entry.breakType ? (entry.breakType + (retTime ? ' back at ' + retTime : '')) : '';
+    if (entry.breakNote) details += (details ? ' — ' : '') + entry.breakNote;
     tr.innerHTML = '<td>' + t + '</td><td>' + (entry.avatar||'') + ' ' + escHtml(entry.userName) +
       '</td><td>' + escHtml(entry.role||'') + '</td><td>' + escHtml(entry.type) +
       '</td><td>' + escHtml(details) + '</td>';
