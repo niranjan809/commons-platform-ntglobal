@@ -7,6 +7,7 @@ const axios = require('axios');
 const path = require('path');
 const multer = require('multer');
 const notes = require('./notes');
+const mycroft = require('./mycroft');
 
 const app = express();
 const server = http.createServer(app);
@@ -586,6 +587,37 @@ app.post('/api/notes/process', upload.single('audio'), async (req, res) => {
     res.status(code).json({ error: e.message });
   }
 });
+
+// ── Even G2 glasses bridge (Mycroft assistant) ───────────────────────────────
+// Lets the glasses' Even Hub app reach Mycroft without running anything locally.
+// One attempt per call; the app owns the poll loop and pushes the answer to the
+// HUD whenever it lands (no ~30s ceiling). CORS is already enabled app-wide.
+app.post('/api/mycroft/ask-once', async (req, res) => {
+  const message = ((req.body && req.body.message) || '').trim();
+  if (!message) return res.status(400).json({ status: 'error', final: false, text: '', error: 'no_message' });
+  try {
+    const out = await mycroft.askOnce(message);
+    res.json(out);
+  } catch (e) {
+    console.error('Mycroft ask-once error:', e.message);
+    res.json({ status: 'error', final: false, text: '' });
+  }
+});
+
+// Raw audio/wav body → hosted Whisper (same Groq/OpenAI key as the notetaker).
+app.post('/api/mycroft/transcribe',
+  express.raw({ type: ['audio/wav', 'application/octet-stream'], limit: '25mb' }),
+  async (req, res) => {
+    try {
+      const buf = req.body;
+      if (!buf || !buf.length) return res.json({ text: '', error: 'empty_body' });
+      const out = await notes.transcribeAudio(buf, 'speech.wav');
+      res.json({ text: out.text });
+    } catch (e) {
+      console.error('Mycroft transcribe error:', e.message);
+      res.json({ text: '', error: e.message });
+    }
+  });
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
