@@ -76,6 +76,21 @@ function storeChatMsg(msg) {
   if (chatHistory[ch].length > 500) chatHistory[ch].shift();
 }
 
+// -- Private 1:1 message history, keyed by the sorted socket-id pair (session-scoped)
+const dmHistory = new Map();
+function dmKey(a, b) { return [a, b].sort().join('|'); }
+
+// -- AI Notetaker (Zoho) scaffold: when a meeting is created we capture its
+//    meetingKey here so a future phase can fetch + transcribe the recording.
+//    Fetching needs the org to enable auto-record AND the OAuth token to add the
+//    ZohoMeeting.recording.READ scope, so the poll/transcribe step is not wired yet.
+const pendingRecordings = [];
+function capturePendingRecording(meetingKey, topic) {
+  if (!meetingKey) return;
+  pendingRecordings.push({ meetingKey, topic: topic || '', at: new Date().toISOString() });
+  if (pendingRecordings.length > 500) pendingRecordings.shift();
+}
+
 function getUsersArray() {
   return Array.from(users.values()).map(u => ({ ...u, socketId: undefined, zohoToken: undefined }));
 }
@@ -92,6 +107,30 @@ function checkProximity(movedUser) {
 }
 
 function huddleKey(a, b) { return [a, b].sort().join('::'); }
+
+// Promote a pending proximity pair into a real Zoho huddle only after they've
+// lingered together (DWELL_MS) — runs on a timer so it fires even when both
+// users stand still. A brief fly-by never reaches this and never books a meeting.
+const DWELL_MS = 2500;
+function publicUser(u) { return { ...u, socketId: undefined, zohoToken: undefined }; }
+setInterval(() => {
+  for (const [key, h] of huddles) {
+    if (h.created) continue;
+    const a = users.get(h.a), b = users.get(h.b);
+    if (!a || !b) { huddles.delete(key); continue; }
+    const dx = a.x - b.x, dy = a.y - b.y;
+    if (Math.sqrt(dx * dx + dy * dy) > PROXIMITY_RADIUS) { huddles.delete(key); continue; }
+    if (Date.now() - h.since < DWELL_MS) continue;
+    h.created = true;  // set first so a slow Zoho call can't double-fire
+    const meetToken = a.zohoToken || b.zohoToken || null;
+    createZohoMeeting('Huddle: ' + a.name + ' & ' + b.name, meetToken).then((meetLink) => {
+      if (huddles.get(key) !== h) return;  // pair drifted apart mid-create — skip the stale toast
+      h.zohoMeetLink = meetLink;
+      io.to(a.id).emit('proximity:meet', { with: publicUser(b), meetLink });
+      io.to(b.id).emit('proximity:meet', { with: publicUser(a), meetLink });
+    });
+  }
+}, 1000);
 
 async function refreshZohoToken() {
   if (!process.env.ZOHO_REFRESH_TOKEN || !process.env.ZOHO_CLIENT_ID || !process.env.ZOHO_CLIENT_SECRET) return null;
@@ -168,6 +207,7 @@ async function createZohoMeeting(topic, userToken) {
     );
     console.log('Zoho Meeting created:', JSON.stringify(res.data).substring(0, 300));
     const m = res.data && (res.data.session || res.data);
+    if (m) capturePendingRecording(m.meetingKey || m.meetingkey || m.key, topic);  // Zoho notetaker scaffold
     return (m && (m.joinLink || m.join_url || m.joinUrl || m.joinlink || m.join_link)) || null;
   }
 
@@ -243,33 +283,24 @@ io.on('connection', (socket) => {
     for (const other of nearby) {
       const key = huddleKey(socket.id, other.id);
       if (!huddles.has(key)) {
-        huddles.set(key, { zohoMeetLink: null, createdAt: Date.now() });
-        const meetToken = user.zohoToken || other.zohoToken || null;
-        createZohoMeeting('Huddle: ' + user.name + ' & ' + other.name, meetToken).then((meetLink) => {
-          huddles.set(key, { zohoMeetLink: meetLink, createdAt: Date.now() });
-          io.to(socket.id).emit('proximity:meet', { with: other, meetLink });
-          io.to(other.id).emit('proximity:meet', { with: user, meetLink });
-          if (user.slackUsername) postSlackMessage(user.slackUsername,
-            'You are near *' + other.name + '* in the office -- Zoho huddle: ' + meetLink);
-          if (other.slackUsername) postSlackMessage(other.slackUsername,
-            'You are near *' + user.name + '* in the office -- Zoho huddle: ' + meetLink);
-        });
+        // Pending only: require a short dwell before booking a meeting, so brushing
+        // past someone doesn't auto-create a huddle or ping anyone. The sweep below
+        // promotes it once both have lingered together (handles standing still too).
+        huddles.set(key, { since: Date.now(), created: false, zohoMeetLink: null, a: socket.id, b: other.id });
       }
     }
 
-    for (const [key] of huddles) {
-      const parts = key.split('::');
-      if (parts[0] === socket.id || parts[1] === socket.id) {
-        const otherId = parts[0] === socket.id ? parts[1] : parts[0];
-        const otherUser = users.get(otherId);
-        if (otherUser) {
-          const dx = user.x - otherUser.x;
-          const dy = user.y - otherUser.y;
-          if (Math.sqrt(dx*dx + dy*dy) > PROXIMITY_RADIUS * 1.5) {
-            huddles.delete(key);
-            io.to(socket.id).emit('proximity:left', { with: otherUser });
-            io.to(otherId).emit('proximity:left', { with: user });
-          }
+    for (const [key, h] of huddles) {
+      if (h.a !== socket.id && h.b !== socket.id) continue;
+      const otherId = h.a === socket.id ? h.b : h.a;
+      const otherUser = users.get(otherId);
+      if (!otherUser) { huddles.delete(key); continue; }
+      const dx = user.x - otherUser.x, dy = user.y - otherUser.y;
+      if (Math.sqrt(dx*dx + dy*dy) > PROXIMITY_RADIUS * 1.5) {
+        huddles.delete(key);
+        if (h.created) {
+          io.to(socket.id).emit('proximity:left', { with: otherUser });
+          io.to(otherId).emit('proximity:left', { with: user });
         }
       }
     }
@@ -315,6 +346,26 @@ io.on('connection', (socket) => {
     if (process.env.SLACK_BOT_TOKEN) {
       postSlackMessage('#' + (channel || 'general'), '*' + user.name + '*: ' + text.trim());
     }
+  });
+
+  // Private 1:1 messages — routed only to the two participants, never mirrored to Slack.
+  socket.on('dm:open', ({ withId }) => {
+    socket.emit('dm:history', { withId, messages: dmHistory.get(dmKey(socket.id, withId)) || [] });
+  });
+  socket.on('dm:send', ({ toId, text }) => {
+    const user = users.get(socket.id);
+    if (!user || !toId || !text || !text.trim()) return;
+    const msg = {
+      id: Date.now(), fromId: socket.id, toId,
+      userName: user.name, avatar: user.avatar, color: user.color,
+      text: text.trim().slice(0, 2000), ts: new Date().toISOString()
+    };
+    const key = dmKey(socket.id, toId);
+    const arr = dmHistory.get(key) || [];
+    arr.push(msg); if (arr.length > 200) arr.shift();
+    dmHistory.set(key, arr);
+    io.to(socket.id).emit('dm:message', msg);
+    if (toId !== socket.id) io.to(toId).emit('dm:message', msg);
   });
 
   socket.on('disconnect', () => {
@@ -463,6 +514,14 @@ app.post('/api/slack/events', express.raw({ type: 'application/json' }), (req, r
 app.get('/api/chat/history', (req, res) => {
   const ch = req.query.channel || 'general';
   res.json({ messages: chatHistory[ch] || [] });
+});
+
+// Admin: meetings captured for the (not-yet-wired) Zoho auto-notetaker.
+app.get('/api/admin/recordings', (req, res) => {
+  const pwd = req.query.pwd || req.headers['x-admin-pwd'];
+  const required = process.env.ADMIN_PASSWORD || 'commons-admin-2026';
+  if (pwd !== required) return res.status(401).json({ error: 'Wrong password' });
+  res.json({ count: pendingRecordings.length, recordings: pendingRecordings.slice().reverse().slice(0, 100) });
 });
 
 // ── Admin: live health check of every integration's keys ──────────────────────

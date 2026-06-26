@@ -94,8 +94,37 @@ function joinGame(profile) {
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) clearKeys(); else lastFrameTime = 0;
   });
+  // Is Slack actually wired up? Drive the composer hint honestly off real config.
+  fetch('/api/notes/config').then(r => r.json())
+    .then(cfg => { state.slackConnected = !!cfg.slack; updateSlackHint(); })
+    .catch(() => { updateSlackHint(); });
+  setupIdleAway();
   loop();
   setTimeout(hideMoveHint, 8000);
+}
+
+// Auto-flip to Away after inactivity so a green dot means "actually here now",
+// then back to Available on the next activity. Never overrides Busy/Break/manual Away.
+function setupIdleAway() {
+  const IDLE_MS = 5 * 60 * 1000;
+  let lastActivity = Date.now();
+  const onActivity = () => {
+    lastActivity = Date.now();
+    if (state.autoAway && state.me && state.me.status === 'offline') {
+      state.autoAway = false;
+      emitStatus('available', null, null);
+      if (statusSelect) statusSelect.value = 'available';
+    }
+  };
+  ['mousemove', 'keydown', 'mousedown', 'wheel', 'touchstart'].forEach(ev =>
+    document.addEventListener(ev, onActivity, { passive: true }));
+  setInterval(() => {
+    if (state.me && state.me.status === 'available' && Date.now() - lastActivity > IDLE_MS) {
+      state.autoAway = true;
+      emitStatus('offline', null, null);
+      if (statusSelect) statusSelect.value = 'offline';
+    }
+  }, 30000);
 }
 
 function resizeCanvas() {
@@ -121,6 +150,7 @@ function bindSocket() {
     const u = state.users.get(id);
     if (u) addSystemMsg(u.avatar + ' ' + u.name + ' left');
     state.users.delete(id); renderMemberList();
+    if (id === state.followId) { state.followId = null; updateFollowBanner(); }
   });
   s.on('user:moved', ({ id, x, y }) => {
     if (id === state.me?.id) return;            // we are authoritative for our own position
@@ -144,10 +174,26 @@ function bindSocket() {
       if (!state.searchQuery || msg.text.toLowerCase().includes(state.searchQuery.toLowerCase())) {
         renderChatMsg(msg, state.searchQuery);
       }
+    } else {
+      state.unread = state.unread || {};
+      state.unread[msg.channel] = (state.unread[msg.channel] || 0) + 1;
+      renderUnread();
     }
   });
   s.on('proximity:meet', ({ with: other, meetLink }) => showProximityToast(other, meetLink));
   s.on('proximity:left', () => dismissToast());
+  s.on('dm:history', ({ withId, messages }) => {
+    state.chatHistory['dm:' + withId] = messages || [];
+    if (state.currentChannel === 'dm:' + withId) refreshChatView();
+  });
+  s.on('dm:message', msg => {
+    const other = msg.fromId === state.me?.id ? msg.toId : msg.fromId;
+    const key = 'dm:' + other;
+    if (!state.chatHistory[key]) state.chatHistory[key] = [];
+    state.chatHistory[key].push(msg);
+    if (state.currentChannel === key) renderChatMsg(msg, null);
+    else if (msg.fromId !== state.me?.id) addSystemMsg('🔒 New private message from ' + msg.userName);
+  });
 }
 
 let lastEmit = 0, lastFrameTime = 0;
@@ -200,24 +246,40 @@ function handleMovement(dt) {
   if (state.keys['ArrowUp']    || state.keys['w']) dy -= 1;
   if (state.keys['ArrowDown']  || state.keys['s']) dy += 1;
 
-  let moved = false;
+  let vx = 0, vy = 0;
   if (dx !== 0 || dy !== 0) {
-    state.moveTarget = null;                                   // keyboard cancels click-to-move
-    if (dx && dy) { dx *= Math.SQRT1_2; dy *= Math.SQRT1_2; }  // diagonals shouldn't be faster
-    state.me.x += dx * step; state.me.y += dy * step;
-    moved = true;
-  } else if (state.moveTarget) {                               // walk toward a clicked point
-    const tx = state.moveTarget.x - state.me.x, ty = state.moveTarget.y - state.me.y;
-    const dist = Math.hypot(tx, ty);
-    if (dist <= step + 0.5) { state.me.x = state.moveTarget.x; state.me.y = state.moveTarget.y; state.moveTarget = null; }
-    else { state.me.x += (tx / dist) * step; state.me.y += (ty / dist) * step; }
-    moved = true;
+    if (state.followId) { state.followId = null; updateFollowBanner(); }  // manual input cancels follow
+    state.moveTarget = null;                                              // and click-to-move
+    if (dx && dy) { dx *= Math.SQRT1_2; dy *= Math.SQRT1_2; }             // diagonals shouldn't be faster
+    vx = dx * step; vy = dy * step;
+  } else if (state.followId) {                                           // trail a teammate
+    const t = state.users.get(state.followId);
+    if (!t || typeof t.x !== 'number') { state.followId = null; updateFollowBanner(); return; }
+    const fx = t.x - state.me.x, fy = t.y - state.me.y, fd = Math.hypot(fx, fy);
+    if (fd <= AVATAR_R * 2) return;                                       // close enough — wait
+    vx = (fx / fd) * step; vy = (fy / fd) * step;
+  } else if (state.moveTarget) {                                         // walk toward a clicked point
+    const tx = state.moveTarget.x - state.me.x, ty = state.moveTarget.y - state.me.y, td = Math.hypot(tx, ty);
+    if (td <= step + 0.5) { vx = tx; vy = ty; state.moveTarget = null; }
+    else { vx = (tx / td) * step; vy = (ty / td) * step; }
+  } else return;
+  if (vx === 0 && vy === 0) return;
+
+  // Apply movement axis-by-axis with collision, so you slide along obstacles
+  // instead of sticking, and never walk through trees, the pond, or teammates.
+  const ox = state.me.x, oy = state.me.y;
+  const clampX = x => Math.max(AVATAR_R, Math.min(MEADOW_W - AVATAR_R, x));
+  const clampY = y => Math.max(AVATAR_R, Math.min(MEADOW_H - AVATAR_R, y));
+  const tryX = clampX(ox + vx);
+  if (!intoSolid(ox, oy, tryX, oy)) state.me.x = tryX;
+  const tryY = clampY(oy + vy);
+  if (!intoSolid(state.me.x, oy, state.me.x, tryY)) state.me.y = tryY;
+  if (state.me.x === ox && state.me.y === oy) {                          // fully blocked
+    if (state.moveTarget) state.moveTarget = null;                       // can't reach the clicked spot
+    return;
   }
-  if (!moved) return;
 
   if (!moveHintHidden) hideMoveHint();
-  state.me.x = Math.max(AVATAR_R, Math.min(MEADOW_W - AVATAR_R, state.me.x));
-  state.me.y = Math.max(AVATAR_R, Math.min(MEADOW_H - AVATAR_R, state.me.y));
   const u = state.users.get(state.me.id);
   if (u) { u.x = state.me.x; u.y = state.me.y; }
   const now = Date.now();
@@ -225,6 +287,25 @@ function handleMovement(dt) {
     state.socket.emit('move', { x: Math.round(state.me.x), y: Math.round(state.me.y) });
     lastEmit = now;
   }
+}
+
+// Solid obstacles: trees, bushes, the pond, and other avatars. A step is blocked
+// only if it pushes DEEPER into a solid — so you can never get trapped (e.g. if
+// you spawn on one) and you slide cleanly along edges.
+function intoSolid(ox, oy, nx, ny) {
+  const deeper = (cx, cy, r) => {
+    const nd = Math.hypot(nx - cx, ny - cy);
+    return nd < r && nd < Math.hypot(ox - cx, oy - cy);
+  };
+  for (const t of TREES) if (deeper(t.x, t.y, 30)) return true;
+  for (const b of BUSHES) if (deeper(b.x, b.y, 24)) return true;
+  const pond = (px, py) => Math.hypot((px - POND.x) / POND.rx, (py - POND.y) / POND.ry);
+  if (pond(nx, ny) < 1 && pond(nx, ny) < pond(ox, oy)) return true;
+  for (const [, other] of state.users) {
+    if (other.id === state.me.id || typeof other.x !== 'number') continue;
+    if (deeper(other.x, other.y, AVATAR_R * 1.5)) return true;
+  }
+  return false;
 }
 
 // Click anywhere on the meadow to walk there — a reliable input path that does
@@ -235,9 +316,20 @@ function onMeadowClick(e) {
   if (!rect.width || !rect.height) return;
   const sx = (e.clientX - rect.left) * (c.width / rect.width);
   const sy = (e.clientY - rect.top) * (c.height / rect.height);
+  const wx = (sx - state.view.offX) / state.view.scale;
+  const wy = (sy - state.view.offY) / state.view.scale;
+  // Clicking on a teammate's avatar opens their card (Gather instinct), not a walk.
+  for (const u of state.users.values()) {
+    if (u.id === state.me.id) continue;
+    if (typeof u.x === 'number' && Math.hypot(u.x - wx, u.y - wy) <= AVATAR_R + 4) {
+      showProfilePopover(u, state.canvas);
+      return;
+    }
+  }
+  if (state.followId) { state.followId = null; updateFollowBanner(); }
   state.moveTarget = {
-    x: Math.max(AVATAR_R, Math.min(MEADOW_W - AVATAR_R, (sx - state.view.offX) / state.view.scale)),
-    y: Math.max(AVATAR_R, Math.min(MEADOW_H - AVATAR_R, (sy - state.view.offY) / state.view.scale)),
+    x: Math.max(AVATAR_R, Math.min(MEADOW_W - AVATAR_R, wx)),
+    y: Math.max(AVATAR_R, Math.min(MEADOW_H - AVATAR_R, wy)),
   };
   if (!moveHintHidden) hideMoveHint();
 }
@@ -414,9 +506,17 @@ function drawAvatar(ctx, u, isMe) {
 }
 
 function renderMemberList() {
-  memberList.innerHTML = '';
   const order = { available:0, busy:1, break:2, offline:3 };
-  const sorted = Array.from(state.users.values()).sort((a,b) => (order[a.status]??4)-(order[b.status]??4));
+  const all = Array.from(state.users.values());
+  // glanceable tally (doubles as a filter)
+  const counts = { available:0, busy:0, break:0, offline:0 };
+  for (const u of all) { const s = u.status || 'available'; counts[s] = (counts[s] || 0) + 1; }
+  renderStatusTally(counts);
+  const filter = state.statusFilter;
+  const sorted = all
+    .filter(u => !filter || (u.status || 'available') === filter)
+    .sort((a,b) => (order[a.status]??4)-(order[b.status]??4));
+  memberList.innerHTML = '';
   for (const u of sorted) {
     const li = document.createElement('li');
     li.className = 'member-item'; li.dataset.id = u.id;
@@ -438,7 +538,24 @@ function renderMemberList() {
   }
 }
 
-setInterval(renderMemberList, 15000);
+function renderStatusTally(counts) {
+  const el = $('status-tally');
+  if (!el) return;
+  const defs = [['available','🟢'], ['busy','🔴'], ['break','⏸'], ['offline','⚫']];
+  el.innerHTML = defs.map(([k, emoji]) =>
+    '<button class="tally-chip' + (state.statusFilter === k ? ' active' : '') + '" data-st="' + k + '">' +
+    emoji + ' ' + (counts[k] || 0) + '</button>').join('');
+  el.querySelectorAll('.tally-chip').forEach(b => b.addEventListener('click', () => {
+    state.statusFilter = (state.statusFilter === b.dataset.st) ? null : b.dataset.st;
+    renderMemberList();
+  }));
+}
+
+// Refresh once a second while anyone is on a break so countdowns tick live;
+// otherwise the list is event-driven (join/leave/status), so no need to thrash.
+setInterval(() => {
+  if (Array.from(state.users.values()).some(u => u.status === 'break' && u.breakReturnAt)) renderMemberList();
+}, 1000);
 
 statusSelect.addEventListener('change', () => {
   const val = statusSelect.value;
@@ -465,11 +582,48 @@ document.querySelectorAll('.ch-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.ch-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active'); state.currentChannel = btn.dataset.ch;
+    state.dmWith = null;
+    const hash = $('chat-hash'); if (hash) hash.style.display = '';
     chatChannName.textContent = btn.dataset.ch;
     chatInput.placeholder = 'Message #' + btn.dataset.ch + '...';
+    if (state.unread) { state.unread[btn.dataset.ch] = 0; renderUnread(); }
+    updateSlackHint();
     refreshChatView();
   });
 });
+
+function renderUnread() {
+  document.querySelectorAll('.ch-btn').forEach(b => {
+    const n = (state.unread && state.unread[b.dataset.ch]) || 0;
+    let badge = b.querySelector('.ch-badge');
+    if (n > 0) {
+      if (!badge) { badge = document.createElement('span'); badge.className = 'ch-badge'; b.appendChild(badge); }
+      badge.textContent = n > 9 ? '9+' : String(n);
+      b.classList.add('has-unread');
+    } else {
+      if (badge) badge.remove();
+      b.classList.remove('has-unread');
+    }
+  });
+}
+
+// Honest Slack state — only claim mirroring when a bot token is actually configured.
+function updateSlackHint() {
+  const el = $('slack-hint');
+  if (!el) return;
+  if (state.currentChannel && String(state.currentChannel).startsWith('dm:')) {
+    el.innerHTML = '<span class="slack-dot slack-dot-off"></span> Private message — not posted to Slack';
+    el.classList.add('slack-off');
+    return;
+  }
+  if (state.slackConnected) {
+    el.innerHTML = '<span class="slack-dot"></span> Mirrors to <b>#' + escHtml(state.currentChannel) + '</b> on Slack';
+    el.classList.remove('slack-off');
+  } else {
+    el.innerHTML = '<span class="slack-dot slack-dot-off"></span> Slack not connected — messages stay in Commons';
+    el.classList.add('slack-off');
+  }
+}
 
 $('chat-send-btn').addEventListener('click', sendChat);
 chatInput.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); } });
@@ -477,8 +631,39 @@ chatInput.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKe
 function sendChat() {
   const text = chatInput.value.trim();
   if (!text || !state.socket) return;
-  state.socket.emit('chat:send', { text, channel: state.currentChannel });
+  if (state.dmWith) state.socket.emit('dm:send', { toId: state.dmWith.id, text });
+  else state.socket.emit('chat:send', { text, channel: state.currentChannel });
   chatInput.value = '';
+}
+
+// Open a private 1:1 conversation in the chat panel (a "dm:<id>" pseudo-channel).
+function openDM(u) {
+  state.dmWith = u;
+  state.currentChannel = 'dm:' + u.id;
+  document.querySelectorAll('.ch-btn').forEach(b => b.classList.remove('active'));
+  const hash = $('chat-hash'); if (hash) hash.style.display = 'none';
+  chatChannName.textContent = '🔒 ' + (u.name || 'Direct message');
+  chatInput.placeholder = 'Message ' + ((u.name || '').split(' ')[0] || 'them') + ' privately…';
+  updateSlackHint();
+  if (!state.chatHistory['dm:' + u.id]) state.chatHistory['dm:' + u.id] = [];
+  if (state.socket) state.socket.emit('dm:open', { withId: u.id });
+  refreshChatView();
+  profilePop.classList.add('hidden');
+}
+
+function updateFollowBanner() {
+  const el = document.getElementById('follow-banner');
+  if (!el) return;
+  if (state.followId) {
+    const t = state.users.get(state.followId);
+    el.innerHTML = '👣 Following <b>' + escHtml(t ? (t.name || '').split(' ')[0] : '') +
+      '</b> · move to stop <button id="follow-stop" class="follow-stop">stop</button>';
+    el.classList.remove('hidden');
+    const sb = document.getElementById('follow-stop');
+    if (sb) sb.addEventListener('click', () => { state.followId = null; updateFollowBanner(); });
+  } else {
+    el.classList.add('hidden');
+  }
 }
 
 function renderChatMsg(msg, highlight) {
@@ -526,6 +711,35 @@ function showProfilePopover(u, anchorEl) {
     : (u.activity ? ('Currently: ' + u.activity) : '');
   const links = $('pop-links');
   links.innerHTML = '';
+  if (state.me && u.id !== state.me.id) {
+    const dm = document.createElement('button');
+    dm.className = 'pop-link pop-link-dm';
+    dm.textContent = '🔒 Message privately';
+    dm.addEventListener('click', () => openDM(u));
+    links.appendChild(dm);
+  }
+  if (state.me && u.id !== state.me.id && typeof u.x === 'number') {
+    const b = document.createElement('button');
+    b.className = 'pop-link pop-link-walk';
+    b.textContent = '🚶 Walk over here';
+    b.addEventListener('click', () => {
+      state.followId = null; updateFollowBanner();
+      state.moveTarget = { x: u.x, y: u.y };
+      profilePop.classList.add('hidden');
+      if (!moveHintHidden) hideMoveHint();
+    });
+    links.appendChild(b);
+    const fb = document.createElement('button');
+    fb.className = 'pop-link pop-link-follow';
+    fb.textContent = '👣 Follow';
+    fb.addEventListener('click', () => {
+      state.followId = u.id; state.moveTarget = null;
+      updateFollowBanner();
+      profilePop.classList.add('hidden');
+      if (!moveHintHidden) hideMoveHint();
+    });
+    links.appendChild(fb);
+  }
   if (u.slackUsername) {
     const a = document.createElement('a');
     a.className = 'pop-link pop-link-slack';
@@ -540,7 +754,7 @@ function showProfilePopover(u, anchorEl) {
     a.textContent = 'Join Zoho Meeting';
     links.appendChild(a);
   }
-  if (!u.slackUsername && !u.zohoMeetLink) {
+  if (!links.children.length) {
     links.innerHTML = '<span style="font-size:12px;color:#aaa;">No links added</span>';
   }
   const rect = anchorEl.getBoundingClientRect();
@@ -551,33 +765,46 @@ function showProfilePopover(u, anchorEl) {
 
 $('popover-close-btn').addEventListener('click', () => profilePop.classList.add('hidden'));
 
-// ── Zoho Meeting quick-start ────────────────────────────────────────────
+// ── Instant meeting (Zoho) — one click: open for me + share the join link to the
+//    current channel (which mirrors to Slack) so the team joins in one click. ──
 $('quick-meet-btn').addEventListener('click', async () => {
   const btn = $('quick-meet-btn');
   const original = btn.textContent;
-  btn.disabled = true; btn.textContent = '⏳ Creating meeting…';
+  btn.disabled = true; btn.textContent = '⏳ Starting…';
+  const restore = (label, ms) => { btn.textContent = label; setTimeout(() => { btn.textContent = original; btn.disabled = false; }, ms); };
   try {
     const res = await fetch('/api/meet/create', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ topic: 'Quick Meet — ' + (state.me?.name || 'Commons') })
+      body: JSON.stringify({ topic: 'Instant meeting — ' + (state.me?.name || 'Commons') })
     });
     const data = await res.json();
     if (data.meetLink) {
-      window.open(data.meetLink, '_blank');
-      if (state.socket && state.me) state.socket.emit('user:profile', { zohoMeetLink: data.meetLink });
+      window.open(data.meetLink, '_blank');                       // open for me immediately
+      if (state.socket && state.me) {
+        state.socket.emit('user:profile', { zohoMeetLink: data.meetLink });
+        // share to the current channel -> everyone can one-click join, and it mirrors to Slack
+        state.socket.emit('chat:send', {
+          text: '⚡ ' + (state.me.name || 'Someone') + ' started an instant meeting — join: ' + data.meetLink,
+          channel: state.currentChannel
+        });
+      }
+      restore('✓ Meeting started', 2500);
     } else {
-      alert('Could not start meeting: ' + (data.error || 'Zoho not configured'));
+      addSystemMsg('Could not start meeting: ' + (data.error || 'Zoho not configured on the server'));
+      restore('✕ Zoho not configured', 2500);
     }
-  } catch (e) { alert('Error: ' + e.message); }
-  finally { btn.disabled = false; btn.textContent = original; }
+  } catch (e) { addSystemMsg('Meeting error: ' + e.message); restore('✕ Error', 2500); }
 });
 
 // ── Helpers ───────────────────────────────────────────────────────────────────────────────
 function getCountdown(isoStr) {
   if (!isoStr) return '';
   const diff = new Date(isoStr) - new Date();
-  if (diff <= 0) return '';
+  if (diff <= 0) {                       // overdue — stay visible instead of blanking
+    const over = Math.floor(-diff / 60000);
+    return over < 1 ? 'due' : over + 'm over';
+  }
   return Math.ceil(diff / 60000) + 'm';
 }
 
@@ -880,3 +1107,126 @@ function renderNotesResult(data) {
   el.innerHTML = html;
   el.classList.remove('hidden');
 }
+
+// ── Universal search — people · messages (all channels) · channels ──────────
+const searchModal = $('search-modal'), searchInput = $('search-input'), searchResults = $('search-results');
+const SEARCH_CHANNELS = ['general', 'random', 'team'];
+
+function openSearch() {
+  if (!state.me) return;
+  searchModal.classList.remove('hidden');
+  searchInput.value = '';
+  renderSearch('');
+  setTimeout(() => searchInput.focus(), 30);
+}
+function closeSearch() { searchModal.classList.add('hidden'); }
+function escAttr(s) { return escHtml(s).replace(/"/g, '&quot;'); }
+function switchChannel(ch) { const b = document.querySelector('.ch-btn[data-ch="' + ch + '"]'); if (b) b.click(); }
+
+function renderSearch(q) {
+  const ql = q.toLowerCase();
+  const out = [];
+
+  const people = Array.from(state.users.values()).filter(u =>
+    !ql || [u.name, u.role, u.team].filter(Boolean).some(s => s.toLowerCase().includes(ql))).slice(0, 8);
+  if (people.length) {
+    out.push('<div class="sr-group">People</div>');
+    for (const u of people) {
+      out.push('<button class="sr-item" data-kind="person" data-id="' + u.id + '">' +
+        '<span class="sr-emoji">' + (u.avatar || '🐱') + '</span>' +
+        '<span class="sr-main">' + escHtml(u.name) + '<span class="sr-sub">' +
+        escHtml(u.role || 'Team Member') + (u.team ? ' · ' + escHtml(u.team) : '') + '</span></span>' +
+        '<span class="dot dot-' + (u.status || 'available') + '"></span></button>');
+    }
+  }
+
+  if (ql) {
+    const msgs = [];
+    for (const ch of Object.keys(state.chatHistory)) {
+      if (ch.startsWith('dm:')) continue;   // never surface private DMs in global search
+      for (const m of (state.chatHistory[ch] || [])) {
+        if (m.text && m.text.toLowerCase().includes(ql)) msgs.push(m);
+      }
+    }
+    msgs.sort((a, b) => new Date(b.ts) - new Date(a.ts));
+    if (msgs.length) {
+      out.push('<div class="sr-group">Messages</div>');
+      for (const m of msgs.slice(0, 8)) {
+        out.push('<button class="sr-item" data-kind="msg" data-ch="' + escAttr(m.channel) + '" data-q="' + escAttr(q) + '">' +
+          '<span class="sr-emoji">' + (m.avatar || '💬') + '</span>' +
+          '<span class="sr-main">' + escHtml(m.text).slice(0, 90) +
+          '<span class="sr-sub">' + escHtml(m.userName) + ' · #' + escHtml(m.channel) + '</span></span></button>');
+      }
+    }
+  }
+
+  const chans = SEARCH_CHANNELS.filter(c => !ql || c.includes(ql));
+  if (chans.length) {
+    out.push('<div class="sr-group">Channels</div>');
+    for (const c of chans) {
+      out.push('<button class="sr-item" data-kind="channel" data-ch="' + c + '"><span class="sr-emoji">#</span><span class="sr-main">' + c + '</span></button>');
+    }
+  }
+
+  searchResults.innerHTML = out.join('') || '<div class="sr-empty">No matches.</div>';
+  searchResults.querySelectorAll('.sr-item').forEach(el => el.addEventListener('click', () => onSearchPick(el.dataset)));
+}
+
+function onSearchPick(d) {
+  closeSearch();
+  if (d.kind === 'person') {
+    const u = state.users.get(d.id);
+    if (u) showProfilePopover(u, $('search-open-btn'));
+  } else {
+    switchChannel(d.ch);
+    if (d.kind === 'msg' && d.q) {
+      chatSearchEl.value = d.q; state.searchQuery = d.q;
+      chatSearchClear.classList.remove('hidden');
+      refreshChatView();
+    }
+  }
+}
+
+$('search-open-btn').addEventListener('click', openSearch);
+$('search-close').addEventListener('click', closeSearch);
+searchModal.addEventListener('click', e => { if (e.target === searchModal) closeSearch(); });
+searchInput.addEventListener('input', () => renderSearch(searchInput.value.trim()));
+
+// ── Help & FAQ ──────────────────────────────────────────────────────────────
+$('help-open-btn').addEventListener('click', () => $('help-modal').classList.remove('hidden'));
+$('help-close').addEventListener('click', () => $('help-modal').classList.add('hidden'));
+$('help-modal').addEventListener('click', e => { if (e.target === $('help-modal')) $('help-modal').classList.add('hidden'); });
+
+// ── Print: a clean team-overview snapshot ───────────────────────────────────
+$('help-print-btn').addEventListener('click', printOverview);
+function printOverview() {
+  const order = { available: 0, busy: 1, break: 2, offline: 3 };
+  const sorted = Array.from(state.users.values()).sort((a, b) => (order[a.status] ?? 4) - (order[b.status] ?? 4));
+  let rows = '';
+  for (const u of sorted) {
+    let status = STATUS_LABEL[u.status] || 'Available';
+    if (u.status === 'break' && u.breakType) {
+      const cd = u.breakReturnAt ? getCountdown(u.breakReturnAt) : '';
+      status = 'On ' + u.breakType + ' break' + (cd ? ' (back in ' + cd + ')' : '');
+    }
+    const note = (u.status === 'break' && u.breakNote) ? u.breakNote : (u.activity || '');
+    rows += '<tr><td>' + (u.avatar || '') + ' ' + escHtml(u.name) + '</td><td>' + escHtml(u.role || '') +
+            '</td><td>' + escHtml(u.team || '') + '</td><td>' + escHtml(status) + '</td><td>' + escHtml(note) + '</td></tr>';
+  }
+  $('print-area').innerHTML =
+    '<h1>Commons — team overview</h1>' +
+    '<p class="print-meta">' + sorted.length + ' online · generated ' + new Date().toLocaleString() + '</p>' +
+    '<table class="print-table"><thead><tr><th>Name</th><th>Role</th><th>Team</th><th>Status</th><th>Note / activity</th></tr></thead>' +
+    '<tbody>' + (rows || '<tr><td colspan="5">No one online.</td></tr>') + '</tbody></table>';
+  window.print();
+}
+
+// ── Global shortcuts: Ctrl/⌘+K opens search, Esc closes overlays ────────────
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
+    e.preventDefault(); openSearch();
+  } else if (e.key === 'Escape') {
+    closeSearch();
+    $('help-modal').classList.add('hidden');
+  }
+});

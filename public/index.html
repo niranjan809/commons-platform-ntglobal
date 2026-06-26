@@ -56,6 +56,7 @@
         <span class="av-opt" data-av="🦋">🦋</span>
       </div>
     </div>
+    <p class="join-note">A calm text &amp; status office — chat mirrors to Slack, meetings open in Zoho. No in-app video to set up.</p>
     <button id="join-btn" class="btn-primary">Enter the meadow →</button>
   </div>
 </div>
@@ -69,6 +70,10 @@
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-header">
       <span class="sidebar-logo">🌿 Commons</span>
+      <div class="header-actions">
+        <button id="search-open-btn" class="hdr-btn" title="Search everything (Ctrl / ⌘ K)">🔍</button>
+        <button id="help-open-btn" class="hdr-btn" title="Help &amp; FAQ">❓</button>
+      </div>
     </div>
 
     <!-- Status selector -->
@@ -119,11 +124,12 @@
 
     <!-- Members -->
     <div class="section-label">Team</div>
+    <div id="status-tally" class="status-tally"></div>
     <ul class="member-list" id="member-list"></ul>
 
     <!-- Quick Meet + Admin -->
     <div class="sidebar-footer">
-      <button class="btn-meet" id="quick-meet-btn">📹 Start Zoho Meeting</button>
+      <button class="btn-meet" id="quick-meet-btn">⚡ Instant meeting</button>
       <button class="btn-admin" id="notes-open-btn" title="AI Notetaker">📝</button>
       <button class="btn-admin" id="admin-open-btn" title="Superuser: Attendance Log">📋</button>
     </div>
@@ -132,6 +138,9 @@
   <!-- Canvas meadow -->
   <main class="meadow-container">
     <canvas id="meadow-canvas"></canvas>
+
+    <!-- Following a teammate -->
+    <div id="follow-banner" class="follow-banner hidden"></div>
 
     <!-- Movement hint (fades on first move) -->
     <div id="move-hint" class="move-hint">
@@ -154,7 +163,7 @@
   <!-- Right panel: chat -->
   <aside class="chat-panel" id="chat-panel">
     <div class="chat-header">
-      <span class="chat-title"># <span id="chat-channel-name">general</span></span>
+      <span class="chat-title"><span id="chat-hash">#</span> <span id="chat-channel-name">general</span></span>
       <div class="chat-channels">
         <button class="ch-btn active" data-ch="general"># general</button>
         <button class="ch-btn" data-ch="random"># random</button>
@@ -170,6 +179,9 @@
     <div class="chat-compose">
       <input id="chat-input" type="text" placeholder="Message #general…" autocomplete="off" />
       <button id="chat-send-btn" class="btn-send">↑</button>
+    </div>
+    <div id="slack-hint" class="slack-hint">
+      <span class="slack-dot"></span> Posts to <b>#<span id="slack-hint-ch">general</span></b> on Slack automatically
     </div>
   </aside>
 
@@ -259,6 +271,54 @@
     </div>
   </div>
 </div>
+
+<!-- Universal search (Ctrl / ⌘ K) -->
+<div id="search-modal" class="search-modal hidden">
+  <div class="search-panel">
+    <div class="search-box">
+      <span class="search-ico">🔍</span>
+      <input id="search-input" type="text" autocomplete="off"
+             placeholder="Search people, messages, channels…" />
+      <button id="search-close" class="search-esc">esc</button>
+    </div>
+    <div id="search-results" class="search-results"></div>
+    <div class="search-foot">People · messages (all channels) · channels — one place</div>
+  </div>
+</div>
+
+<!-- Help & FAQ -->
+<div id="help-modal" class="admin-modal hidden">
+  <div class="admin-inner help-inner">
+    <div class="admin-header">
+      <span>❓ Help &amp; FAQ</span>
+      <span class="help-head-actions">
+        <button id="help-print-btn" class="btn-sm btn-secondary">🖨 Print team overview</button>
+        <button id="help-close" class="popover-close">✕</button>
+      </span>
+    </div>
+    <div class="help-body">
+      <details open><summary>🚶 Moving around</summary>
+        <p>Use the <b>arrow keys</b> or <b>WASD</b> to walk, or just <b>click anywhere on the meadow</b> to walk there. The whole meadow fits your screen, so your avatar is always visible.</p></details>
+      <details><summary>🟢 Status &amp; breaks</summary>
+        <p>Set your status (Available / Busy / Break / Away) from the sidebar. For a break, pick a type (lunch, coffee, BRB, focus, call), a “back in” time, and an optional <b>note</b> — teammates see your countdown and note on your avatar and in the list. You’re switched back to Available automatically when the timer ends.</p></details>
+      <details><summary>⚡ Instant meeting (Zoho)</summary>
+        <p>Click <b>⚡ Instant meeting</b> — a Zoho meeting is created, opens for you, and the join link is dropped into the current chat channel (and Slack) so anyone can join in one click. You can also just <b>walk up to a teammate</b>: when your avatars get close, a meeting link is created for both of you automatically.</p></details>
+      <details><summary>💬 Chat &amp; Slack</summary>
+        <p>Chat in <b>#general / #random / #team</b>. Every message you send is mirrored to the matching <b>Slack</b> channel automatically, and Slack replies appear here — no extra steps. Use the search box in the chat header to filter the current channel.</p></details>
+      <details><summary>🔍 Search everything</summary>
+        <p>Press <b>Ctrl / ⌘ K</b> (or the 🔍 in the top-left) to search <b>people, messages across every channel, and channels</b> from one place. Click a result to open that person’s card or jump to that message.</p></details>
+      <details><summary>👤 Profiles</summary>
+        <p>Click any teammate in the list (or a search result) to see their card: role, team, status, break note, and Slack / Meet links.</p></details>
+      <details><summary>📝 AI Notetaker</summary>
+        <p>Open 📝 in the sidebar. Upload a recording (any language → English) <i>or</i> paste a transcript, set the attendees, and generate <b>Minutes of Meeting</b> (summary, decisions, per-person action items). Optionally post the summary to Slack and DM each owner their tasks.</p></details>
+      <details><summary>📋 Admin &amp; 🖨 Print</summary>
+        <p>The 📋 panel (password-protected) shows live users, the attendance log with CSV export, and a one-click <b>integrations health check</b> (Slack / Zoho / Claude / transcription). Use <b>🖨 Print team overview</b> above for a printable snapshot of who’s here and their status.</p></details>
+    </div>
+  </div>
+</div>
+
+<!-- Printable overview (off-screen until printed) -->
+<div id="print-area" class="print-area"></div>
 
 <!-- Profile popover -->
 <div id="profile-popover" class="profile-popover hidden">
