@@ -107,7 +107,9 @@
         </select>
         <input id="break-custom-mins" type="number" min="1" max="480" placeholder="min"
                class="break-custom-input hidden" />
-        <button id="break-confirm-btn" class="btn-sm btn-primary">Set</button>
+        <input id="break-note" type="text" maxlength="80" autocomplete="off"
+               class="break-note-input" placeholder="Note (optional) — e.g. lunch with the team" />
+        <button id="break-confirm-btn" class="btn-sm btn-primary">Set break</button>
         <div id="break-return-display" class="break-return-display hidden">
           Back at <span id="break-return-time"></span>
           <button id="break-cancel-btn" class="btn-sm btn-danger">Cancel</button>
@@ -122,6 +124,7 @@
     <!-- Quick Meet + Admin -->
     <div class="sidebar-footer">
       <button class="btn-meet" id="quick-meet-btn">📹 Start Zoho Meeting</button>
+      <button class="btn-admin" id="notes-open-btn" title="AI Notetaker">📝</button>
       <button class="btn-admin" id="admin-open-btn" title="Superuser: Attendance Log">📋</button>
     </div>
   </aside>
@@ -129,6 +132,11 @@
   <!-- Canvas meadow -->
   <main class="meadow-container">
     <canvas id="meadow-canvas"></canvas>
+
+    <!-- Movement hint (fades on first move) -->
+    <div id="move-hint" class="move-hint">
+      <span class="move-hint-keys">↑ ↓ ← →</span> or <b>WASD</b> to walk · click a teammate to open their card
+    </div>
 
     <!-- Proximity toast -->
     <div id="proximity-toast" class="proximity-toast hidden">
@@ -177,8 +185,16 @@
         <button id="admin-login-btn" class="btn-sm btn-primary">View Logs</button>
       </div>
       <div id="admin-content" class="hidden">
+        <!-- Integrations health -->
+        <div class="admin-section-label">🔌 Integrations</div>
+        <div class="admin-toolbar">
+          <button id="diag-btn" class="btn-sm btn-secondary">Check keys</button>
+          <span class="admin-dim">Live ping of Slack, Zoho, Claude & transcription</span>
+        </div>
+        <div id="diag-result" class="diag-result"></div>
+
         <!-- Live Users -->
-        <div class="admin-section-label">🟢 Live Users</div>
+        <div class="admin-section-label" style="margin-top:12px">🟢 Live Users</div>
         <div class="admin-toolbar">
           <span id="admin-live-count"></span>
           <button id="admin-reset-btn" class="btn-sm btn-danger">⚠ Reset Room</button>
@@ -208,6 +224,40 @@
     </div>
   </div>
 
+</div>
+
+<!-- AI Notetaker modal -->
+<div id="notes-modal" class="admin-modal hidden">
+  <div class="admin-inner notes-inner">
+    <div class="admin-header">
+      <span>📝 AI Notetaker</span>
+      <button id="notes-close" class="popover-close">✕</button>
+    </div>
+    <div class="notes-body">
+      <p class="notes-intro">Turn a meeting recording (any language → English) or a transcript into Minutes of Meeting, then optionally post them to Slack and DM each person their action items.</p>
+      <div id="notes-config-hint" class="notes-hint"></div>
+
+      <label class="notes-label">Recording <span class="notes-dim">(audio/video, ≤ 25 MB)</span></label>
+      <input id="notes-audio" type="file" accept="audio/*,video/*" class="notes-file" />
+
+      <div class="notes-or">— or —</div>
+
+      <label class="notes-label">Paste a transcript</label>
+      <textarea id="notes-transcript" class="notes-textarea" rows="4" placeholder="Paste meeting text here if you already have it…"></textarea>
+
+      <label class="notes-label">Attendees <span class="notes-dim">(comma-separated — owners for action items)</span></label>
+      <input id="notes-attendees" type="text" class="notes-input" placeholder="e.g. Arun, Meera, Niran" autocomplete="off" />
+
+      <div class="notes-row">
+        <label class="notes-checkbox"><input id="notes-send" type="checkbox" /> Send to Slack</label>
+        <input id="notes-channel" type="text" class="notes-input notes-channel" value="#general" autocomplete="off" />
+      </div>
+
+      <button id="notes-run-btn" class="btn-sm btn-primary notes-run">Generate Minutes</button>
+      <div id="notes-status" class="notes-status hidden"></div>
+      <div id="notes-result" class="notes-result hidden"></div>
+    </div>
+  </div>
 </div>
 
 <!-- Profile popover -->

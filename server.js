@@ -5,10 +5,13 @@ const { Server } = require('socket.io');
 const cors = require('cors');
 const axios = require('axios');
 const path = require('path');
+const multer = require('multer');
+const notes = require('./notes');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 
 app.use(cors());
 app.use(express.json());
@@ -187,11 +190,12 @@ async function createZohoMeeting(topic, userToken) {
 }
 
 async function postSlackMessage(channel, text) {
-  if (!process.env.SLACK_BOT_TOKEN) return;
+  if (!process.env.SLACK_BOT_TOKEN) return null;
   try {
-    await axios.post('https://slack.com/api/chat.postMessage', { channel, text },
+    const r = await axios.post('https://slack.com/api/chat.postMessage', { channel, text },
       { headers: { Authorization: 'Bearer ' + process.env.SLACK_BOT_TOKEN } });
-  } catch (e) { console.error('Slack error:', e.message); }
+    return r.data;
+  } catch (e) { console.error('Slack error:', e.message); return null; }
 }
 
 async function updateSlackStatus(slackUsername, statusText, statusEmoji) {
@@ -213,7 +217,7 @@ io.on('connection', (socket) => {
       avatar: data.avatar || '🐱', color: data.color || '#7ec8a0',
       x: data.x || Math.floor(Math.random() * 600 + 100),
       y: data.y || Math.floor(Math.random() * 400 + 100),
-      status: 'available', breakType: null, breakReturnAt: null,
+      status: 'available', breakType: null, breakReturnAt: null, breakNote: null,
       slackUsername: data.slackUsername || '', zohoMeetLink: data.zohoMeetLink || '',
       zohoToken: data.zohoToken || null,
       activity: '', team: data.team || ''
@@ -276,10 +280,13 @@ io.on('connection', (socket) => {
     user.status = data.status;
     user.breakType = data.breakType || null;
     user.breakReturnAt = data.breakReturnAt || null;
-    logAttendance(data.status, user, data.breakType ? { breakType: data.breakType, breakReturnAt: data.breakReturnAt } : {});
-    io.emit('user:status', { id: socket.id, status: user.status, breakType: user.breakType, breakReturnAt: user.breakReturnAt });
+    user.breakNote = (data.breakNote || '').toString().trim().slice(0, 80) || null;
+    logAttendance(data.status, user, data.breakType ? { breakType: data.breakType, breakReturnAt: data.breakReturnAt, breakNote: user.breakNote } : {});
+    io.emit('user:status', { id: socket.id, status: user.status, breakType: user.breakType, breakReturnAt: user.breakReturnAt, breakNote: user.breakNote });
     const emojiMap = { available: ':large_green_circle:', busy: ':red_circle:', break: ':pause_button:', offline: ':black_circle:' };
-    const textMap = { available: 'In the office', busy: 'Busy', break: data.breakType ? 'On ' + data.breakType + ' break' : 'On break', offline: 'Away' };
+    let breakText = data.breakType ? 'On ' + data.breakType + ' break' : 'On break';
+    if (user.breakNote) breakText += ' — ' + user.breakNote;
+    const textMap = { available: 'In the office', busy: 'Busy', break: breakText, offline: 'Away' };
     updateSlackStatus(user.slackUsername, textMap[data.status] || '', emojiMap[data.status] || '');
   });
 
@@ -455,6 +462,129 @@ app.post('/api/slack/events', express.raw({ type: 'application/json' }), (req, r
 app.get('/api/chat/history', (req, res) => {
   const ch = req.query.channel || 'general';
   res.json({ messages: chatHistory[ch] || [] });
+});
+
+// ── Admin: live health check of every integration's keys ──────────────────────
+app.get('/api/admin/diagnostics', async (req, res) => {
+  const pwd = req.query.pwd || req.headers['x-admin-pwd'];
+  const required = process.env.ADMIN_PASSWORD || 'commons-admin-2026';
+  if (pwd !== required) return res.status(401).json({ error: 'Wrong password' });
+  const out = {};
+
+  // Slack — auth.test (free)
+  if (!process.env.SLACK_BOT_TOKEN) out.slack = { set: false };
+  else {
+    try {
+      const r = await axios.post('https://slack.com/api/auth.test', {},
+        { headers: { Authorization: 'Bearer ' + process.env.SLACK_BOT_TOKEN }, timeout: 10000 });
+      out.slack = r.data.ok ? { set: true, ok: true, team: r.data.team, bot: r.data.user }
+                            : { set: true, ok: false, error: r.data.error };
+    } catch (e) { out.slack = { set: true, ok: false, error: e.message }; }
+  }
+
+  // Zoho — refresh the token, then userinfo
+  if (!process.env.ZOHO_REFRESH_TOKEN || !process.env.ZOHO_CLIENT_ID || !process.env.ZOHO_CLIENT_SECRET) {
+    out.zoho = { set: false };
+  } else {
+    try {
+      const tok = await refreshZohoToken();
+      if (!tok) out.zoho = { set: true, ok: false, error: 'token refresh failed — check client id/secret/refresh token' };
+      else {
+        try {
+          const info = await axios.get('https://accounts.zoho.in/oauth/v2/userinfo',
+            { headers: { Authorization: 'Zoho-oauthtoken ' + tok }, timeout: 10000 });
+          const d = info.data || {};
+          out.zoho = { set: true, ok: true, org: d.ZSOID || d.org_id || null, email: d.Email || d.email || null };
+        } catch (e2) { out.zoho = { set: true, ok: true, note: 'token refreshed; userinfo unavailable' }; }
+      }
+    } catch (e) { out.zoho = { set: true, ok: false, error: e.message }; }
+  }
+
+  // Claude — list models (free)
+  if (!process.env.ANTHROPIC_API_KEY) out.anthropic = { set: false };
+  else {
+    try {
+      const r = await axios.get('https://api.anthropic.com/v1/models',
+        { headers: { 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' }, timeout: 10000 });
+      out.anthropic = { set: true, ok: true, models: (r.data.data || []).length };
+    } catch (e) {
+      out.anthropic = { set: true, ok: false, error: (e.response && e.response.status) ? 'HTTP ' + e.response.status : e.message };
+    }
+  }
+
+  // Transcription — Groq/OpenAI models list (free)
+  const stt = notes.sttConfig();
+  if (!stt) out.transcription = { set: false };
+  else {
+    try {
+      const base = stt.provider === 'groq' ? 'https://api.groq.com/openai/v1/models' : 'https://api.openai.com/v1/models';
+      await axios.get(base, { headers: { Authorization: 'Bearer ' + stt.key }, timeout: 10000 });
+      out.transcription = { set: true, ok: true, provider: stt.provider, model: stt.model };
+    } catch (e) {
+      out.transcription = { set: true, ok: false, provider: stt.provider, error: (e.response && e.response.status) ? 'HTTP ' + e.response.status : e.message };
+    }
+  }
+
+  res.json(out);
+});
+
+// ── Notetaker: transcribe (hosted) and/or summarize a meeting, optionally to Slack
+app.get('/api/notes/config', (req, res) => {
+  const stt = notes.sttConfig();
+  res.json({
+    stt: stt ? stt.provider : null,
+    claude: !!process.env.ANTHROPIC_API_KEY,
+    slack: !!process.env.SLACK_BOT_TOKEN,
+  });
+});
+
+app.post('/api/notes/process', upload.single('audio'), async (req, res) => {
+  try {
+    const body = req.body || {};
+    let transcript = (body.transcript || '').trim();
+    let transcriptMeta = null;
+    if (!transcript && req.file) {
+      const out = await notes.transcribeAudio(req.file.buffer, req.file.originalname);
+      transcript = out.text;
+      transcriptMeta = { provider: out.provider, model: out.model };
+    }
+    if (!transcript) return res.status(400).json({ error: 'Provide an audio file or paste a transcript.' });
+
+    const attendees = (body.attendees || '').split(',').map(s => s.trim()).filter(Boolean);
+    // Roster from the people currently online: name -> Slack DM target.
+    const roster = {};
+    for (const [, u] of users) if (u.name) roster[u.name] = { slack_id: u.slackUsername || '' };
+
+    const mom = await notes.generateMoM(transcript, attendees.length ? attendees : Object.keys(roster));
+    const grouped = notes.groupByMember(mom.action_items, roster);
+
+    const wantSend = body.send === 'true' || body.send === true;
+    const channel = (body.channel || '#general').trim() || '#general';
+    const delivery = { attempted: wantSend, channel, summaryPosted: false, dms: [] };
+    if (wantSend) {
+      if (!process.env.SLACK_BOT_TOKEN) {
+        delivery.error = 'SLACK_BOT_TOKEN is not set on the server.';
+      } else {
+        const summaryText = '*Minutes of Meeting*\n\n' + (mom.summary || '') +
+          '\n\n*Action items:* ' + ((mom.action_items || []).length);
+        const r = await postSlackMessage(channel, summaryText);
+        delivery.summaryPosted = !!(r && r.ok);
+        if (r && !r.ok) delivery.summaryError = r.error;
+        for (const [member, tasks] of Object.entries(grouped)) {
+          const sid = roster[member] && roster[member].slack_id;
+          if (!sid) { delivery.dms.push({ member, ok: false, reason: 'no Slack id' }); continue; }
+          const dm = '*Your action items from the meeting:*\n' + tasks.map(t => '• ' + t).join('\n');
+          const r2 = await postSlackMessage(sid, dm);
+          delivery.dms.push({ member, ok: !!(r2 && r2.ok), error: r2 && r2.error });
+        }
+      }
+    }
+    res.json({ ok: true, transcript, transcriptMeta, mom, grouped, delivery });
+  } catch (e) {
+    const code = e.code === 'NO_STT_KEY' ? 400 : 500;
+    console.error('Notetaker error:', e.message);
+    res.status(code).json({ error: e.message });
+  }
 });
 
 const PORT = process.env.PORT || 3000;

@@ -11,6 +11,7 @@ Virtual team office — Gather.town replacement with Slack + Zoho Meeting integr
 - **Profile popovers** — click any avatar or member in the sidebar to see their card (name, role, team, status, Slack link, Meet link)
 - **Slack-style chat** — #general, #random, #team channels; messages mirror to Slack
 - **Quick Meet** — instantly generate a Zoho Meeting link from the sidebar
+- **AI Notetaker** — from the sidebar, upload a recording (any language → English) or paste a transcript; generates Minutes of Meeting (summary, decisions, per-person action items) with Claude and can post them to Slack + DM each owner their tasks
 
 ## Getting started
 
@@ -34,9 +35,13 @@ Copy `.env.example` to `.env` and fill in your credentials:
 SLACK_BOT_TOKEN=xoxb-...
 ZOHO_ACCESS_TOKEN=...
 ZOHO_CLIENT_ID=...
+ANTHROPIC_API_KEY=sk-ant-...   # AI Notetaker: Minutes of Meeting
+GROQ_API_KEY=gsk_...           # AI Notetaker: in-app transcription (free tier)
 ```
 
-Without these, the app runs fully in demo mode (no Slack/Meet API calls).
+Without these, the app runs fully in demo mode (no Slack/Meet API calls). The
+notetaker still works with a pasted transcript when no transcription key is set,
+and falls back to a basic keyword summary when there's no Claude key.
 
 ## Stack
 
