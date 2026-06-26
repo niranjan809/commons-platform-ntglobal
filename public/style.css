@@ -662,6 +662,27 @@ body {
 .slack-hint.slack-off { color: var(--text-light); }
 .slack-dot-off { background: #c2c2c2 !important; }
 
+/* ─── Follow banner ──────────────────────────────────────────────────────── */
+.follow-banner {
+  position: absolute; top: 16px; left: 50%; transform: translateX(-50%);
+  background: rgba(74,122,90,0.92); color: var(--cream);
+  padding: 7px 14px; border-radius: 20px; font-size: 13px; font-weight: 600;
+  box-shadow: var(--shadow); z-index: 45; white-space: nowrap;
+}
+.follow-banner b { color: var(--amber-light); }
+.follow-stop {
+  margin-left: 8px; background: rgba(255,255,255,0.2); color: var(--cream);
+  border: none; border-radius: 10px; padding: 2px 8px; font-size: 11px;
+  font-weight: 700; cursor: pointer; font-family: inherit;
+}
+.follow-stop:hover { background: rgba(255,255,255,0.35); }
+
+/* ─── Profile card: follow + DM buttons ──────────────────────────────────── */
+.pop-link-follow { background: var(--green-pale); color: var(--green-dark); border: none; width: 100%; cursor: pointer; font-family: inherit; justify-content: center; }
+.pop-link-follow:hover { background: var(--green-soft); }
+.pop-link-dm { background: #ede7f6; color: #4527a0; border: none; width: 100%; cursor: pointer; font-family: inherit; justify-content: center; }
+.pop-link-dm:hover { background: #d8ccf0; }
+
 /* ─── Join-screen expectation note ───────────────────────────────────────── */
 .join-note { font-size: 12px; line-height: 1.5; color: var(--text-light); margin-top: 18px; }
 

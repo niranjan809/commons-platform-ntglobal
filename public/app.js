@@ -150,6 +150,7 @@ function bindSocket() {
     const u = state.users.get(id);
     if (u) addSystemMsg(u.avatar + ' ' + u.name + ' left');
     state.users.delete(id); renderMemberList();
+    if (id === state.followId) { state.followId = null; updateFollowBanner(); }
   });
   s.on('user:moved', ({ id, x, y }) => {
     if (id === state.me?.id) return;            // we are authoritative for our own position
@@ -181,6 +182,18 @@ function bindSocket() {
   });
   s.on('proximity:meet', ({ with: other, meetLink }) => showProximityToast(other, meetLink));
   s.on('proximity:left', () => dismissToast());
+  s.on('dm:history', ({ withId, messages }) => {
+    state.chatHistory['dm:' + withId] = messages || [];
+    if (state.currentChannel === 'dm:' + withId) refreshChatView();
+  });
+  s.on('dm:message', msg => {
+    const other = msg.fromId === state.me?.id ? msg.toId : msg.fromId;
+    const key = 'dm:' + other;
+    if (!state.chatHistory[key]) state.chatHistory[key] = [];
+    state.chatHistory[key].push(msg);
+    if (state.currentChannel === key) renderChatMsg(msg, null);
+    else if (msg.fromId !== state.me?.id) addSystemMsg('🔒 New private message from ' + msg.userName);
+  });
 }
 
 let lastEmit = 0, lastFrameTime = 0;
@@ -233,24 +246,40 @@ function handleMovement(dt) {
   if (state.keys['ArrowUp']    || state.keys['w']) dy -= 1;
   if (state.keys['ArrowDown']  || state.keys['s']) dy += 1;
 
-  let moved = false;
+  let vx = 0, vy = 0;
   if (dx !== 0 || dy !== 0) {
-    state.moveTarget = null;                                   // keyboard cancels click-to-move
-    if (dx && dy) { dx *= Math.SQRT1_2; dy *= Math.SQRT1_2; }  // diagonals shouldn't be faster
-    state.me.x += dx * step; state.me.y += dy * step;
-    moved = true;
-  } else if (state.moveTarget) {                               // walk toward a clicked point
-    const tx = state.moveTarget.x - state.me.x, ty = state.moveTarget.y - state.me.y;
-    const dist = Math.hypot(tx, ty);
-    if (dist <= step + 0.5) { state.me.x = state.moveTarget.x; state.me.y = state.moveTarget.y; state.moveTarget = null; }
-    else { state.me.x += (tx / dist) * step; state.me.y += (ty / dist) * step; }
-    moved = true;
+    if (state.followId) { state.followId = null; updateFollowBanner(); }  // manual input cancels follow
+    state.moveTarget = null;                                              // and click-to-move
+    if (dx && dy) { dx *= Math.SQRT1_2; dy *= Math.SQRT1_2; }             // diagonals shouldn't be faster
+    vx = dx * step; vy = dy * step;
+  } else if (state.followId) {                                           // trail a teammate
+    const t = state.users.get(state.followId);
+    if (!t || typeof t.x !== 'number') { state.followId = null; updateFollowBanner(); return; }
+    const fx = t.x - state.me.x, fy = t.y - state.me.y, fd = Math.hypot(fx, fy);
+    if (fd <= AVATAR_R * 2) return;                                       // close enough — wait
+    vx = (fx / fd) * step; vy = (fy / fd) * step;
+  } else if (state.moveTarget) {                                         // walk toward a clicked point
+    const tx = state.moveTarget.x - state.me.x, ty = state.moveTarget.y - state.me.y, td = Math.hypot(tx, ty);
+    if (td <= step + 0.5) { vx = tx; vy = ty; state.moveTarget = null; }
+    else { vx = (tx / td) * step; vy = (ty / td) * step; }
+  } else return;
+  if (vx === 0 && vy === 0) return;
+
+  // Apply movement axis-by-axis with collision, so you slide along obstacles
+  // instead of sticking, and never walk through trees, the pond, or teammates.
+  const ox = state.me.x, oy = state.me.y;
+  const clampX = x => Math.max(AVATAR_R, Math.min(MEADOW_W - AVATAR_R, x));
+  const clampY = y => Math.max(AVATAR_R, Math.min(MEADOW_H - AVATAR_R, y));
+  const tryX = clampX(ox + vx);
+  if (!intoSolid(ox, oy, tryX, oy)) state.me.x = tryX;
+  const tryY = clampY(oy + vy);
+  if (!intoSolid(state.me.x, oy, state.me.x, tryY)) state.me.y = tryY;
+  if (state.me.x === ox && state.me.y === oy) {                          // fully blocked
+    if (state.moveTarget) state.moveTarget = null;                       // can't reach the clicked spot
+    return;
   }
-  if (!moved) return;
 
   if (!moveHintHidden) hideMoveHint();
-  state.me.x = Math.max(AVATAR_R, Math.min(MEADOW_W - AVATAR_R, state.me.x));
-  state.me.y = Math.max(AVATAR_R, Math.min(MEADOW_H - AVATAR_R, state.me.y));
   const u = state.users.get(state.me.id);
   if (u) { u.x = state.me.x; u.y = state.me.y; }
   const now = Date.now();
@@ -258,6 +287,25 @@ function handleMovement(dt) {
     state.socket.emit('move', { x: Math.round(state.me.x), y: Math.round(state.me.y) });
     lastEmit = now;
   }
+}
+
+// Solid obstacles: trees, bushes, the pond, and other avatars. A step is blocked
+// only if it pushes DEEPER into a solid — so you can never get trapped (e.g. if
+// you spawn on one) and you slide cleanly along edges.
+function intoSolid(ox, oy, nx, ny) {
+  const deeper = (cx, cy, r) => {
+    const nd = Math.hypot(nx - cx, ny - cy);
+    return nd < r && nd < Math.hypot(ox - cx, oy - cy);
+  };
+  for (const t of TREES) if (deeper(t.x, t.y, 30)) return true;
+  for (const b of BUSHES) if (deeper(b.x, b.y, 24)) return true;
+  const pond = (px, py) => Math.hypot((px - POND.x) / POND.rx, (py - POND.y) / POND.ry);
+  if (pond(nx, ny) < 1 && pond(nx, ny) < pond(ox, oy)) return true;
+  for (const [, other] of state.users) {
+    if (other.id === state.me.id || typeof other.x !== 'number') continue;
+    if (deeper(other.x, other.y, AVATAR_R * 1.5)) return true;
+  }
+  return false;
 }
 
 // Click anywhere on the meadow to walk there — a reliable input path that does
@@ -278,6 +326,7 @@ function onMeadowClick(e) {
       return;
     }
   }
+  if (state.followId) { state.followId = null; updateFollowBanner(); }
   state.moveTarget = {
     x: Math.max(AVATAR_R, Math.min(MEADOW_W - AVATAR_R, wx)),
     y: Math.max(AVATAR_R, Math.min(MEADOW_H - AVATAR_R, wy)),
@@ -533,6 +582,8 @@ document.querySelectorAll('.ch-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.ch-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active'); state.currentChannel = btn.dataset.ch;
+    state.dmWith = null;
+    const hash = $('chat-hash'); if (hash) hash.style.display = '';
     chatChannName.textContent = btn.dataset.ch;
     chatInput.placeholder = 'Message #' + btn.dataset.ch + '...';
     if (state.unread) { state.unread[btn.dataset.ch] = 0; renderUnread(); }
@@ -560,6 +611,11 @@ function renderUnread() {
 function updateSlackHint() {
   const el = $('slack-hint');
   if (!el) return;
+  if (state.currentChannel && String(state.currentChannel).startsWith('dm:')) {
+    el.innerHTML = '<span class="slack-dot slack-dot-off"></span> Private message — not posted to Slack';
+    el.classList.add('slack-off');
+    return;
+  }
   if (state.slackConnected) {
     el.innerHTML = '<span class="slack-dot"></span> Mirrors to <b>#' + escHtml(state.currentChannel) + '</b> on Slack';
     el.classList.remove('slack-off');
@@ -575,8 +631,39 @@ chatInput.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKe
 function sendChat() {
   const text = chatInput.value.trim();
   if (!text || !state.socket) return;
-  state.socket.emit('chat:send', { text, channel: state.currentChannel });
+  if (state.dmWith) state.socket.emit('dm:send', { toId: state.dmWith.id, text });
+  else state.socket.emit('chat:send', { text, channel: state.currentChannel });
   chatInput.value = '';
+}
+
+// Open a private 1:1 conversation in the chat panel (a "dm:<id>" pseudo-channel).
+function openDM(u) {
+  state.dmWith = u;
+  state.currentChannel = 'dm:' + u.id;
+  document.querySelectorAll('.ch-btn').forEach(b => b.classList.remove('active'));
+  const hash = $('chat-hash'); if (hash) hash.style.display = 'none';
+  chatChannName.textContent = '🔒 ' + (u.name || 'Direct message');
+  chatInput.placeholder = 'Message ' + ((u.name || '').split(' ')[0] || 'them') + ' privately…';
+  updateSlackHint();
+  if (!state.chatHistory['dm:' + u.id]) state.chatHistory['dm:' + u.id] = [];
+  if (state.socket) state.socket.emit('dm:open', { withId: u.id });
+  refreshChatView();
+  profilePop.classList.add('hidden');
+}
+
+function updateFollowBanner() {
+  const el = document.getElementById('follow-banner');
+  if (!el) return;
+  if (state.followId) {
+    const t = state.users.get(state.followId);
+    el.innerHTML = '👣 Following <b>' + escHtml(t ? (t.name || '').split(' ')[0] : '') +
+      '</b> · move to stop <button id="follow-stop" class="follow-stop">stop</button>';
+    el.classList.remove('hidden');
+    const sb = document.getElementById('follow-stop');
+    if (sb) sb.addEventListener('click', () => { state.followId = null; updateFollowBanner(); });
+  } else {
+    el.classList.add('hidden');
+  }
 }
 
 function renderChatMsg(msg, highlight) {
@@ -624,16 +711,34 @@ function showProfilePopover(u, anchorEl) {
     : (u.activity ? ('Currently: ' + u.activity) : '');
   const links = $('pop-links');
   links.innerHTML = '';
+  if (state.me && u.id !== state.me.id) {
+    const dm = document.createElement('button');
+    dm.className = 'pop-link pop-link-dm';
+    dm.textContent = '🔒 Message privately';
+    dm.addEventListener('click', () => openDM(u));
+    links.appendChild(dm);
+  }
   if (state.me && u.id !== state.me.id && typeof u.x === 'number') {
     const b = document.createElement('button');
     b.className = 'pop-link pop-link-walk';
     b.textContent = '🚶 Walk over here';
     b.addEventListener('click', () => {
+      state.followId = null; updateFollowBanner();
       state.moveTarget = { x: u.x, y: u.y };
       profilePop.classList.add('hidden');
       if (!moveHintHidden) hideMoveHint();
     });
     links.appendChild(b);
+    const fb = document.createElement('button');
+    fb.className = 'pop-link pop-link-follow';
+    fb.textContent = '👣 Follow';
+    fb.addEventListener('click', () => {
+      state.followId = u.id; state.moveTarget = null;
+      updateFollowBanner();
+      profilePop.classList.add('hidden');
+      if (!moveHintHidden) hideMoveHint();
+    });
+    links.appendChild(fb);
   }
   if (u.slackUsername) {
     const a = document.createElement('a');
@@ -1038,6 +1143,7 @@ function renderSearch(q) {
   if (ql) {
     const msgs = [];
     for (const ch of Object.keys(state.chatHistory)) {
+      if (ch.startsWith('dm:')) continue;   // never surface private DMs in global search
       for (const m of (state.chatHistory[ch] || [])) {
         if (m.text && m.text.toLowerCase().includes(ql)) msgs.push(m);
       }
