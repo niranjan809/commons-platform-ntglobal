@@ -101,6 +101,7 @@ function joinGame(profile) {
   setupIdleAway();
   loop();
   setTimeout(hideMoveHint, 8000);
+  requestNotifyPermission();
 }
 
 // Auto-flip to Away after inactivity so a green dot means "actually here now",
@@ -184,7 +185,10 @@ function bindSocket() {
       renderUnread();
     }
   });
-  s.on('proximity:meet', ({ with: other, meetLink }) => showProximityToast(other, meetLink));
+  s.on('proximity:meet', ({ with: other, meetLink }) => {
+    showProximityToast(other, meetLink);
+    notify('👋 You’re near ' + (other.name || 'a teammate'), meetLink ? 'Open Commons to join the huddle' : 'Say hi!');
+  });
   s.on('proximity:left', () => dismissToast());
   s.on('dm:history', ({ withId, messages }) => {
     state.chatHistory['dm:' + withId] = messages || [];
@@ -196,7 +200,7 @@ function bindSocket() {
     if (!state.chatHistory[key]) state.chatHistory[key] = [];
     state.chatHistory[key].push(msg);
     if (state.currentChannel === key) renderChatMsg(msg, null);
-    else if (msg.fromId !== state.me?.id) addSystemMsg('🔒 New private message from ' + msg.userName);
+    else if (msg.fromId !== state.me?.id) { addSystemMsg('🔒 New private message from ' + msg.userName); notify('🔒 ' + msg.userName, msg.text); }
   });
 }
 
@@ -232,6 +236,18 @@ function onKeyDown(e) {
 }
 function onKeyUp(e) { state.keys[keyName(e)] = false; }
 function clearKeys() { for (const k in state.keys) state.keys[k] = false; }
+
+// Native OS notifications (great in the desktop app; also works in browsers).
+function requestNotifyPermission() {
+  try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); } catch (e) { /* ignore */ }
+}
+function notify(title, body) {
+  try {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    if (document.hasFocus && document.hasFocus()) return;   // only when the window isn't focused
+    new Notification(title, { body: (body || '').slice(0, 140) });
+  } catch (e) { /* ignore */ }
+}
 
 let moveHintHidden = false;
 function hideMoveHint() {

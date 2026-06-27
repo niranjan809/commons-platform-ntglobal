@@ -1,0 +1,24 @@
+{
+  "name": "commons-desktop",
+  "version": "1.0.0",
+  "description": "Commons — native desktop app (Electron shell over the Commons web app)",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win",
+    "dist:mac": "electron-builder --mac"
+  },
+  "devDependencies": {
+    "electron": "^31.3.1",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "org.ntglobal.commons",
+    "productName": "Commons",
+    "files": ["main.js"],
+    "win": { "target": "nsis" },
+    "mac": { "target": "dmg", "category": "public.app-category.productivity" },
+    "linux": { "target": "AppImage" }
+  }
+}
