@@ -10,8 +10,69 @@
 //   POST /api/news/refresh?pwd= -> force a refresh (admin), returns the new cache
 
 const mycroft = require('./mycroft');
+const axios = require('axios');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ── First-party source: Dubai Taxi Company's own Media Zone ──────────────────
+// DTC's official announcements are the highest-signal news for a DTC exec, so we
+// scrape the Media Zone directly (Webflow, server-rendered — titles live in the
+// post cards' <img alt="…">) and rank them ABOVE the global Mycroft briefing.
+const DTC_NEWS_URL = process.env.DTC_NEWS_URL || 'https://www.dubaitaxi.ae/en/media-zone';
+
+function decodeEntities(s) {
+  return String(s || '')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n, 10)))
+    .replace(/[‘’]/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+async function fetchDtcOfficial() {
+  try {
+    const resp = await axios.get(DTC_NEWS_URL, {
+      timeout: 15000,
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; CommonsG2/1.0)' },
+    });
+    const html = String(resp.data || '');
+    const re = /href="(\/en\/post\/[^"]+)"[^>]*>\s*<img[^>]*\salt="([^"]+)"/gi;
+    const seen = new Set();
+    const items = [];
+    let m;
+    while ((m = re.exec(html)) && items.length < 5) {
+      const title = decodeEntities(m[2]);
+      const key = m[1].toLowerCase();
+      if (title.length < 8 || seen.has(key)) continue;
+      seen.add(key);
+      items.push({ title, detail: 'DTC official', url: 'https://www.dubaitaxi.ae' + m[1] });
+    }
+    if (items.length) console.log('[news] DTC official:', items.length, 'headlines');
+    return items;
+  } catch (e) {
+    console.warn('[news] DTC media-zone fetch failed:', e.message);
+    return [];
+  }
+}
+
+// Merge DTC-official (first, up to 3) with the global briefing, deduped.
+function mergeHeadlines(dtc, global) {
+  const out = [];
+  const seen = new Set();
+  const add = (h) => {
+    if (!h || !h.title) return;
+    const k = h.title.toLowerCase().slice(0, 40);
+    if (seen.has(k)) return;
+    seen.add(k);
+    out.push(h);
+  };
+  (dtc || []).slice(0, 3).forEach(add);
+  (global || []).forEach(add);
+  return out.slice(0, 7);
+}
 
 // Blended exec scope (mirrors the app's NEWS_COMBINED_SCOPE).
 const SCOPE =
@@ -103,10 +164,15 @@ async function refresh() {
   if (refreshing) return cache;
   refreshing = true;
   try {
-    const items = await fetchBriefing();
+    // DTC's own Media Zone + the global Mycroft briefing, in parallel; DTC first.
+    const [dtc, global] = await Promise.all([
+      fetchDtcOfficial().catch(() => []),
+      fetchBriefing().catch(() => []),
+    ]);
+    const items = mergeHeadlines(dtc, global);
     if (valid(items)) {
       cache = { items, updatedAt: Date.now(), source: 'live' };
-      console.log('[news] refreshed:', items.length, 'headlines');
+      console.log('[news] refreshed:', items.length, `headlines (${dtc.length} DTC official)`);
     } else {
       console.warn('[news] refresh got no valid headlines — keeping previous cache');
     }
