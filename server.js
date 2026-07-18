@@ -8,6 +8,7 @@ const path = require('path');
 const multer = require('multer');
 const notes = require('./notes');
 const mycroft = require('./mycroft');
+const g2news = require('./news');
 const crypto = require('crypto');
 
 const app = express();
@@ -751,7 +752,24 @@ app.get('/api/mycroft/log', (req, res) => {
   res.json({ entries: mycroft.getLog() });
 });
 
+// ── Daily executive news briefing for the G2 app ─────────────────────────────
+// The server fetches ONE briefing on a daily schedule (news.start below) and
+// caches it, so the glasses read an instant, already-current list from here
+// rather than each device running its own slow Mycroft web-search.
+app.get('/api/news', (req, res) => {
+  res.json(g2news.get());
+});
+
+// Admin: force a news refresh now (same password gate as the other admin routes).
+app.post('/api/news/refresh', async (req, res) => {
+  const pwd = req.query.pwd || req.headers['x-admin-pwd'];
+  const required = process.env.ADMIN_PASSWORD || 'commons-admin-2026';
+  if (pwd !== required) return res.status(401).json({ error: 'Unauthorized' });
+  res.json(await g2news.refresh());
+});
+
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log('Commons Platform running at http://localhost:' + PORT);
+  g2news.start(); // begin the daily news refresh schedule
 });
