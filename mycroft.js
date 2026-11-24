@@ -35,6 +35,9 @@
 //   POST /api/mycroft/perf       { breakdown }    -> { ok }
 
 const crypto = require('crypto');
+const https = require('https');
+const tls = require('tls');
+const net = require('net');
 
 const MYCROFT_URL = process.env.MYCROFT_TEXT_INPUT_URL || 'https://mycroftlive.mobilityae.com/api/text_input';
 const WAIT_TIMEOUT_S = clampInt(process.env.MYCROFT_WAIT_S, 20, 1, 60);
@@ -44,6 +47,118 @@ const HTTP_TIMEOUT_MS = clampInt(process.env.MYCROFT_HTTP_TIMEOUT_MS, (WAIT_TIME
 // After a 401/403 a wearer's token is parked for this long so a bad token can
 // never loop into the IP lockout. Fixing the token (redeploy) clears it.
 const AUTH_HOLD_MS = clampInt(process.env.MYCROFT_AUTH_HOLD_MS, 10 * 60 * 1000, 0, 24 * 3600 * 1000);
+
+// ── Optional fixed-IP egress proxy ──────────────────────────────────────────
+// Mycroft only accepts a token from registered addresses and Railway's outbound
+// IPs change, so Mycroft calls can go through a CONNECT proxy with a fixed IP
+// (ops/mycroft-egress-proxy). The TLS session to Mycroft runs INSIDE the tunnel,
+// so the proxy never sees the token, the question or the answer.
+//
+//   MYCROFT_PROXY_URL     https://<fixed-ip>:8443   (unset → connect directly)
+//   MYCROFT_PROXY_SECRET  shared secret, sent as Proxy-Authorization: Bearer …
+//   MYCROFT_PROXY_CA      the proxy's self-signed certificate (PEM; literal "\n"
+//                         sequences are accepted so it fits one env-var line)
+const PROXY_URL = (process.env.MYCROFT_PROXY_URL || '').trim();
+const PROXY_SECRET = (process.env.MYCROFT_PROXY_SECRET || '').trim();
+const PROXY_CA = (process.env.MYCROFT_PROXY_CA || '').replace(/\\n/g, '\n').trim();
+let proxyAgent = null;
+
+function makeProxyAgent() {
+  const p = new URL(PROXY_URL);
+  if (p.protocol !== 'https:') throw new Error('MYCROFT_PROXY_URL must be https://');
+  if (!PROXY_SECRET) throw new Error('MYCROFT_PROXY_SECRET is required with MYCROFT_PROXY_URL');
+  const proxyHost = p.hostname.replace(/^\[|\]$/g, '');
+  const proxyPort = parseInt(p.port || '443', 10);
+  const agent = new https.Agent({ keepAlive: true, maxSockets: 16 });
+  agent.createConnection = (opts, cb) => {
+    const targetHost = opts.host || opts.hostname;
+    const targetPort = opts.port || 443;
+    const proxySock = tls.connect({
+      host: proxyHost,
+      port: proxyPort,
+      ca: PROXY_CA || undefined,
+      servername: net.isIP(proxyHost) ? undefined : proxyHost,
+    });
+    let buf = Buffer.alloc(0);
+    let settled = false;
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      proxySock.destroy();
+      cb(err);
+    };
+    proxySock.setTimeout(15000, () => fail(new Error('proxy connect timeout')));
+    proxySock.once('error', fail);
+    proxySock.once('secureConnect', () => {
+      proxySock.write(
+        `CONNECT ${targetHost}:${targetPort} HTTP/1.1\r\n` +
+        `Host: ${targetHost}:${targetPort}\r\n` +
+        `Proxy-Authorization: Bearer ${PROXY_SECRET}\r\n\r\n`
+      );
+    });
+    const onData = (chunk) => {
+      buf = Buffer.concat([buf, chunk]);
+      const end = buf.indexOf('\r\n\r\n');
+      if (end === -1) {
+        if (buf.length > 8192) fail(new Error('proxy response too large'));
+        return;
+      }
+      proxySock.removeListener('data', onData);
+      const statusLine = buf.slice(0, buf.indexOf('\r\n')).toString('latin1');
+      const code = parseInt(statusLine.split(' ')[1], 10);
+      if (code !== 200) return fail(Object.assign(new Error(`proxy refused CONNECT: ${code}`), { code: `PROXY_${code}` }));
+      proxySock.setTimeout(0);
+      proxySock.removeListener('error', fail);
+      settled = true;
+      const secure = tls.connect({ socket: proxySock, servername: targetHost });
+      secure.once('secureConnect', () => cb(null, secure));
+      secure.once('error', (e) => cb(e));
+    };
+    proxySock.on('data', onData);
+  };
+  return agent;
+}
+
+if (PROXY_URL) {
+  try {
+    proxyAgent = makeProxyAgent();
+    console.log(`[mycroft] Mycroft calls go through the egress proxy at ${new URL(PROXY_URL).host}`);
+  } catch (e) {
+    console.error(`[mycroft] ALERT egress proxy misconfigured: ${e.message} — Mycroft calls will fail until fixed`);
+    proxyAgent = 'broken';
+  }
+}
+
+// POST JSON and return a fetch-like { status, ok, headers.get, text() }.
+// Direct → global fetch. Through the proxy → https.request over the tunnel.
+function postJson(url, headers, body, signal) {
+  if (!proxyAgent) {
+    return fetch(url, { method: 'POST', headers, body, signal });
+  }
+  if (proxyAgent === 'broken') return Promise.reject(Object.assign(new Error('proxy misconfigured'), { code: 'PROXY_CONFIG' }));
+  return new Promise((resolve, reject) => {
+    const req = https.request(url, { method: 'POST', headers: Object.assign({ 'Content-Length': Buffer.byteLength(body) }, headers), agent: proxyAgent }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        resolve({
+          status: res.statusCode,
+          ok: res.statusCode >= 200 && res.statusCode < 300,
+          headers: { get: (k) => { const v = res.headers[String(k).toLowerCase()]; return Array.isArray(v) ? v[0] : (v == null ? null : v); } },
+          text: async () => text,
+        });
+      });
+      res.on('error', reject);
+    });
+    req.on('error', reject);
+    if (signal) {
+      const onAbort = () => req.destroy(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+      if (signal.aborted) onAbort(); else signal.addEventListener('abort', onAbort, { once: true });
+    }
+    req.end(body);
+  });
+}
 
 function clampInt(v, dflt, min, max) {
   const n = parseInt(v, 10);
@@ -187,12 +302,12 @@ async function askOnce(wearer, message) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
   try {
-    const resp = await fetch(MYCROFT_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${wearer.token}` },
-      body: JSON.stringify({ message, wait: true, timeout: WAIT_TIMEOUT_S }),
-      signal: controller.signal,
-    });
+    const resp = await postJson(
+      MYCROFT_URL,
+      { 'Content-Type': 'application/json', Authorization: `Bearer ${wearer.token}` },
+      JSON.stringify({ message, wait: true, timeout: WAIT_TIMEOUT_S }),
+      controller.signal
+    );
     const raw = await resp.text();
     let data = {};
     try { data = JSON.parse(raw); } catch (_) { /* non-JSON */ }

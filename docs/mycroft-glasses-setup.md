@@ -7,10 +7,21 @@ longer works.
 
 ## One-time setup
 
-1. **Railway → the service → Settings → Networking → enable Static Outbound IPs.**
-   Send the IPs to the Mycroft administrator. Tokens only work from those addresses.
+1. **Fixed outbound IP via the egress proxy.** Our Railway plan has no static
+   outbound IPs, so Mycroft calls go through `ops/mycroft-egress-proxy` on a small
+   fixed-IP machine hosted by the Mycroft admin (setup in that folder's README).
+   The admin registers that machine's IP with every token. Set on Railway:
+
+   | Variable | Value |
+   |---|---|
+   | `MYCROFT_PROXY_URL` | `https://<proxy-ip>:8443` |
+   | `MYCROFT_PROXY_SECRET` | the proxy's shared secret (from a password manager) |
+   | `MYCROFT_PROXY_CA` | the proxy's `proxy-cert.pem` (newlines may be written as `\n`) |
+
+   Unset `MYCROFT_PROXY_URL` to call Mycroft directly (e.g. if Railway static IPs
+   are ever enabled instead).
 2. **Mycroft admin issues one token per wearer** (admin portal → People → Edit →
-   Glasses → Issue token, with the relay IPs). Tokens start `mcg_`, last 90 days.
+   Glasses → Issue token, with the egress proxy's IP as the relay address). Tokens start `mcg_`, last 90 days.
    Receive them through a password manager, not email or chat.
 3. **Generate a relay key per wearer** (any long random string, ≥24 chars), e.g.
    `node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))"`
