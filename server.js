@@ -716,11 +716,43 @@ app.post('/api/notes/process', upload.single('audio'), async (req, res) => {
 // Lets the glasses' Even Hub app reach Mycroft without running anything locally.
 // One attempt per call; the app owns the poll loop and pushes the answer to the
 // HUD whenever it lands (no ~30s ceiling). CORS is already enabled app-wide.
-app.post('/api/mycroft/ask-once', async (req, res) => {
-  const message = ((req.body && req.body.message) || '').trim();
+//
+// Every /api/mycroft/* call must carry the wearer's relay key (X-Wearer-Key);
+// it picks that wearer's Mycroft token. Unknown keys never reach Mycroft. See
+// mycroft.js for the MYCROFT_WEARERS / MYCROFT_TOKEN_* / MYCROFT_RELAY_KEY_* setup.
+const g2BadKeys = new Map(); // ip -> { n, until }
+const G2_BAD_KEY_LIMIT = 20;
+const G2_BAD_KEY_WINDOW_MS = 15 * 60 * 1000;
+function requireWearer(req, res, next) {
+  // Railway's proxy appends the real client address as the LAST X-Forwarded-For
+  // entry; req.ip alone would be the proxy, so one bad client would trip the
+  // limit for every wearer.
+  const xff = String(req.get('X-Forwarded-For') || '').split(',').map((s) => s.trim()).filter(Boolean);
+  const ip = xff[xff.length - 1] || req.ip || (req.socket && req.socket.remoteAddress) || '';
+  const now = Date.now();
+  const rec = g2BadKeys.get(ip);
+  if (rec && rec.until > now && rec.n >= G2_BAD_KEY_LIMIT) {
+    res.set('Retry-After', String(Math.ceil((rec.until - now) / 1000)));
+    return res.status(429).json({ status: 'retry', final: false, text: '', error: 'too_many_bad_keys' });
+  }
+  const wearer = mycroft.wearerForKey(req.get('X-Wearer-Key'));
+  if (!wearer) {
+    const r = rec && rec.until > now ? rec : { n: 0, until: now + G2_BAD_KEY_WINDOW_MS };
+    r.n += 1;
+    g2BadKeys.set(ip, r);
+    mycroft.logEvent({ kind: 'reject', reason: req.get('X-Wearer-Key') ? 'bad_key' : 'no_key' });
+    return res.status(401).json({ status: 'auth', final: true, text: '', error: 'unknown_wearer' });
+  }
+  req.wearer = wearer;
+  next();
+}
+
+app.post('/api/mycroft/ask-once', requireWearer, async (req, res) => {
+  const raw = req.body && req.body.message;
+  const message = (typeof raw === 'string' ? raw : '').trim().slice(0, 2000);
   if (!message) return res.status(400).json({ status: 'error', final: false, text: '', error: 'no_message' });
   try {
-    const out = await mycroft.askOnce(message);
+    const out = await mycroft.askOnce(req.wearer, message);
     res.json(out);
   } catch (e) {
     console.error('Mycroft ask-once error:', e.message);
@@ -729,26 +761,40 @@ app.post('/api/mycroft/ask-once', async (req, res) => {
 });
 
 // Raw audio/wav body → hosted Whisper (same Groq/OpenAI key as the notetaker).
+// Only sizes and outcomes are logged — never the transcript.
 app.post('/api/mycroft/transcribe',
+  requireWearer,
   express.raw({ type: ['audio/wav', 'application/octet-stream'], limit: '25mb' }),
   async (req, res) => {
     try {
       const buf = req.body;
       if (!buf || !buf.length) return res.json({ text: '', error: 'empty_body' });
       const out = await notes.transcribeAudio(buf, 'speech.wav');
-      mycroft.logEvent({ kind: 'stt', bytes: buf.length, text: (out.text || '').slice(0, 200) });
+      mycroft.logEvent({ kind: 'stt', wearer: req.wearer.id, bytes: buf.length, chars: (out.text || '').length });
       res.json({ text: out.text });
     } catch (e) {
       console.error('Mycroft transcribe error:', e.message);
-      mycroft.logEvent({ kind: 'stt', bytes: (req.body && req.body.length) || 0, text: '', error: e.message });
-      res.json({ text: '', error: e.message });
+      mycroft.logEvent({ kind: 'stt', wearer: req.wearer.id, bytes: (req.body && req.body.length) || 0, error: true });
+      res.json({ text: '', error: 'transcribe_failed' });
     }
   });
 
-// Debug log of recent glasses activity (STT transcriptions + Mycroft answers).
-// Lightly gated so it isn't fully public. GET /api/mycroft/log?key=g2debug
+// App timing telemetry (the old app sent this to Mycroft as a "PERFLOG …"
+// question, which the Mycroft guide forbids). Timings only.
+app.post('/api/mycroft/perf', requireWearer, (req, res) => {
+  const b = req.body && req.body.breakdown;
+  mycroft.logEvent({ kind: 'perf', wearer: req.wearer.id, breakdown: typeof b === 'string' ? b.slice(0, 300) : '' });
+  res.json({ ok: true });
+});
+
+// Status-only log of recent glasses activity (no questions or answers).
+// Off unless MYCROFT_LOG_KEY is set: GET /api/mycroft/log  with header X-Log-Key.
 app.get('/api/mycroft/log', (req, res) => {
-  if (req.query.key !== 'g2debug') return res.status(403).json({ error: 'forbidden' });
+  const want = process.env.MYCROFT_LOG_KEY || '';
+  const got = req.get('X-Log-Key') || '';
+  const ok = want.length >= 16 && got.length === want.length &&
+    crypto.timingSafeEqual(Buffer.from(got), Buffer.from(want));
+  if (!ok) return res.status(403).json({ error: 'forbidden' });
   res.json({ entries: mycroft.getLog() });
 });
 

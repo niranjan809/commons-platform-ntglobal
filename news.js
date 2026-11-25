@@ -92,8 +92,8 @@ const FOLLOWUP =
   '("1. Headline - why it matters"). If the search finished, give the six lines.';
 
 const REFRESH_MS = parseInt(process.env.NEWS_REFRESH_MS || String(24 * 60 * 60 * 1000), 10); // daily
-const POLL_DELAY_MS = 1500;
-const MAX_POLLS = 40;
+const POLL_DELAY_MS = 3000;
+const MAX_POLLS = 6;
 
 // Baked seed so GET /api/news returns something before the first refresh lands.
 const SEED = [
@@ -141,11 +141,22 @@ function valid(items) {
 }
 
 // Poll askOnce until a non-filler (final) answer, mirroring the app's poll loop.
+// Runs as MYCROFT_NEWS_WEARER (default: the first configured wearer). Every
+// re-ask shows up in that person's Mycroft conversation, so polls are capped low.
 async function askUntilFinal(message) {
+  const wearer = mycroft.newsWearer();
+  if (!wearer) {
+    console.warn('[news] no Mycroft wearer configured — skipping the Mycroft briefing');
+    return '';
+  }
   for (let i = 0; i < MAX_POLLS; i++) {
-    const r = await mycroft.askOnce(message);
+    const r = await mycroft.askOnce(wearer, message);
     if (r && r.status === 'success' && r.final && r.text) return r.text;
-    await sleep(POLL_DELAY_MS);
+    // Token/IP problems and Mycroft-side timeouts: stop, never loop (a bad token
+    // retried in a loop locks the relay's IP out for every wearer).
+    if (r && (r.status === 'auth' || r.status === 'timeout')) return '';
+    const wait = r && r.retryAfter ? r.retryAfter * 1000 : POLL_DELAY_MS;
+    await sleep(Math.max(wait, POLL_DELAY_MS));
   }
   return '';
 }
