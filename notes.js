@@ -167,4 +167,4 @@ function groupByMember(action_items, roster) {
   return grouped;
 }
 
-module.exports = { transcribeAudio, generateMoM, localMoM, groupByMember, sttConfig };
+module.exports = { transcribeAudio, generateMoM, localMoM, groupByMember, sttConfig, openRouterKey };

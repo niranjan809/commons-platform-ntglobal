@@ -58,3 +58,42 @@ longer works.
 
 Tokens expire after 90 days. When the admin issues a new one, replace
 `MYCROFT_TOKEN_<ID>` on Railway within a day, then tell the admin to revoke the old one.
+
+## CEO brief and meeting cues (Nov 2026)
+
+Both run on the relay and are reviewed on **`/ops-console.html`**. Open it and
+enter `OPS_CONSOLE_KEY` (the key is kept only for that browser tab).
+
+### Railway variables
+
+| Variable | Example | Notes |
+|---|---|---|
+| `OPS_CONSOLE_KEY` | ≥16 chars | Required for the console. Treat it as a secret and seal it |
+| `OPENROUTER_API_KEY` | `sk-or-…` | Already set for speech-to-text; also used for topic spotting, web search and claim checks |
+| `MYCROFT_BRIEF_WEARER` | `ceo` | Whose Mycroft answers the KPI questions (default: `MYCROFT_NEWS_WEARER`) |
+| `MYCROFT_CUE_WEARER` | `cue` | A separate token for cue lookups, so they don't clash with the wearer's own questions or show in their chat. Default: the wearer |
+| `BRIEF_TIMES` | `07:00,13:00` | Build times, Dubai |
+| `BRIEF_REVIEW_MIN` | `30` | Draft → live after this; `0` = publish at once |
+| `BRIEF_THRESHOLD_PCT` | `10` | KPI change vs same day last week that makes an item critical |
+| `BRIEF_KPIS` | `Trips,Fleet on road,…` | KPIs asked of Mycroft |
+| `CUE_MODE` | `assisted` | `assisted`: every cue needs approval. `auto`: DTC-data cues go straight to the glasses; web cues still need approval |
+| `CUE_INTERVAL_MS` | `45000` | How often the topic is checked during a meeting |
+| `SOURCE_ALLOWLIST` | `rta.ae,wam.ae,…` | Domains outside facts may come from (default list in `grounding.js`) |
+| `OPENROUTER_LLM_MODEL` | `anthropic/claude-haiku-5.5` | Model for topic, drafting and checks |
+
+### Grounding rules (grounding.js)
+
+- Numbers in a cue or brief line must appear in the source it came from.
+- A second model pass checks every claim against the sources. If anything is
+  unsupported, nothing is shown.
+- Outside facts come only from allow-listed domains, through a cited page.
+- KPI figures are parsed from Mycroft's reply. "n/a" is left out, never guessed.
+- A source that fails is named in the brief ("ops data unavailable 07:00").
+
+### Privacy
+
+- Meeting transcript segments are held in memory for 2 minutes. They are
+  dropped on `/cue/stop` or after 10 idle minutes, and never logged.
+- Web searches get topic keywords only, with digits removed. They never get
+  the transcript or internal figures.
+- Logs keep status only.
