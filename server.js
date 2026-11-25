@@ -641,7 +641,8 @@ app.get('/api/admin/diagnostics', async (req, res) => {
   if (!stt) out.transcription = { set: false };
   else {
     try {
-      const base = stt.provider === 'groq' ? 'https://api.groq.com/openai/v1/models' : 'https://api.openai.com/v1/models';
+      const base = stt.provider === 'openrouter' ? 'https://openrouter.ai/api/v1/key'
+        : stt.provider === 'groq' ? 'https://api.groq.com/openai/v1/models' : 'https://api.openai.com/v1/models';
       await axios.get(base, { headers: { Authorization: 'Bearer ' + stt.key }, timeout: 10000 });
       out.transcription = { set: true, ok: true, provider: stt.provider, model: stt.model };
     } catch (e) {

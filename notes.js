@@ -8,10 +8,30 @@ const axios = require('axios');
 const DEFAULT_CLAUDE_MODEL = 'claude-sonnet-4-6';
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 
-// Hosted Whisper via an OpenAI-compatible "audio/translations" endpoint, which
-// outputs English from any source language (incl. Malayalam). Prefer Groq
-// (fast, free tier, whisper-large-v3); fall back to OpenAI's whisper-1.
+// Hosted Whisper via an OpenAI-compatible endpoint. Order:
+//   1. OpenRouter — OPENROUTER_API_KEY, or an OpenRouter key (sk-or-…) that was
+//      put in GROQ_API_KEY (Groq's own API rejects those as "Invalid API Key").
+//      OpenRouter only offers "audio/transcriptions" (same-language text), not
+//      "translations"; whisper-large-v3 by default.
+//   2. Groq "audio/translations" (English from any language, incl. Malayalam).
+//   3. OpenAI "audio/translations" (whisper-1).
+function openRouterKey() {
+  const k = (process.env.OPENROUTER_API_KEY || '').trim();
+  if (k) return k;
+  const g = (process.env.GROQ_API_KEY || '').trim();
+  return /^sk-or-/.test(g) ? g : '';
+}
+
 function sttConfig() {
+  const orKey = openRouterKey();
+  if (orKey) {
+    return {
+      url: 'https://openrouter.ai/api/v1/audio/transcriptions',
+      key: orKey,
+      model: process.env.OPENROUTER_WHISPER_MODEL || 'openai/whisper-large-v3',
+      provider: 'openrouter',
+    };
+  }
   if (process.env.GROQ_API_KEY) {
     return {
       url: 'https://api.groq.com/openai/v1/audio/translations',
