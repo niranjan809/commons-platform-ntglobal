@@ -69,11 +69,15 @@ const mock = https.createServer({ cert: fs.readFileSync(f('target-cert.pem')), k
   });
 });
 
-function runAsk(extraEnv) {
+function runAsk(extraEnv, twice) {
   const code = `
     const m = require(${JSON.stringify(path.join(ROOT, 'mycroft.js'))});
-    m.askOnce(m.wearerForKey('k-ceo-0123456789abcdefghij'), 'How many trips?')
-      .then((r) => { console.log('RESULT' + JSON.stringify({ r, log: m.getLog() })); process.exit(0); });`;
+    const w = m.wearerForKey('k-ceo-0123456789abcdefghij');
+    (async () => {
+      const r = await m.askOnce(w, 'How many trips?');
+      const r2 = ${twice ? "await m.askOnce(w, 'How many trips?')" : 'null'};
+      console.log('RESULT' + JSON.stringify({ r, r2, log: m.getLog() })); process.exit(0);
+    })();`;
   return new Promise((resolve) => {
     const child = spawn(process.execPath, ['-e', code], {
       env: Object.assign({}, process.env, {
@@ -122,18 +126,25 @@ function runAsk(extraEnv) {
       assert.equal(seen[0].auth, `Bearer ${TOKEN}`);
       assert.equal(seen[0].body.message, 'How many trips?');
     });
-    await ok('wrong proxy secret is refused before Mycroft', async () => {
-      const { r } = await runAsk({ MYCROFT_PROXY_SECRET: 'wrong-secret-wrong-secret-wrong-secret' });
-      assert.equal(r.status, 'error'); assert.equal(seen.length, 1);
-      assert.ok(proxyLog.includes('"bad_auth"'));
+    await ok('user:password in MYCROFT_PROXY_URL (Basic auth) works', async () => {
+      const { r } = await runAsk({ MYCROFT_PROXY_URL: `https://glasses:${encodeURIComponent(SECRET)}@127.0.0.1:${PROXY_PORT}`, MYCROFT_PROXY_SECRET: '' });
+      assert.equal(r.status, 'success'); assert.equal(seen.length, 2);
+    });
+    await ok('407 from the proxy → auth, and further calls pause without retrying', async () => {
+      const before = (proxyLog.match(/"bad_auth"/g) || []).length;
+      const { r, r2, log } = await runAsk({ MYCROFT_PROXY_URL: `https://glasses:wrong-password@127.0.0.1:${PROXY_PORT}`, MYCROFT_PROXY_SECRET: '' }, true);
+      assert.equal(r.status, 'auth'); assert.equal(r2.status, 'auth'); assert.equal(seen.length, 2);
+      assert.equal((proxyLog.match(/"bad_auth"/g) || []).length, before + 1, 'second call must not reach the proxy');
+      assert.ok(!JSON.stringify(log).includes('wrong-password'), 'relay log leaked the proxy password');
     });
     await ok('proxy refuses any other destination', async () => {
       const { r } = await runAsk({ MYCROFT_TEXT_INPUT_URL: 'https://example.com/api/text_input' });
       assert.equal(r.status, 'error'); assert.ok(proxyLog.includes('"target_refused"'));
     });
     await ok('relay refuses a proxy with the wrong certificate', async () => {
+      const before = seen.length;
       const { r } = await runAsk({ MYCROFT_PROXY_CA: fs.readFileSync(f('other-cert.pem'), 'utf8') });
-      assert.equal(r.status, 'error'); assert.equal(seen.length, 1);
+      assert.equal(r.status, 'error'); assert.equal(seen.length, before);
     });
     await ok('proxy rejects plain GET', async () => {
       const status = await new Promise((resolve) => {

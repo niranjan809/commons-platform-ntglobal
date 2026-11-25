@@ -7,21 +7,23 @@ longer works.
 
 ## One-time setup
 
-1. **Fixed outbound IP via the egress proxy.** Our Railway plan has no static
-   outbound IPs, so Mycroft calls go through `ops/mycroft-egress-proxy` on a small
-   fixed-IP machine hosted by the Mycroft admin (setup in that folder's README).
-   The admin registers that machine's IP with every token. Set on Railway:
+1. **Fixed outbound IP via the Mycroft proxy.** Our Railway plan has no static
+   outbound IPs, so Mycroft calls go through a CONNECT proxy with a fixed address
+   run by the Mycroft admin (`mycroftstaging.mobilityae.com:8443`, IP
+   `43.205.60.23`, publicly trusted certificate). Set on Railway as a **sealed**
+   variable:
 
    | Variable | Value |
    |---|---|
-   | `MYCROFT_PROXY_URL` | `https://<proxy-ip>:8443` |
-   | `MYCROFT_PROXY_SECRET` | the proxy's shared secret (from a password manager) |
-   | `MYCROFT_PROXY_CA` | the proxy's `proxy-cert.pem` (newlines may be written as `\n`) |
+   | `MYCROFT_PROXY_URL` | `https://glasses:<secret>@mycroftstaging.mobilityae.com:8443`, exactly as received (it contains the proxy secret; never log it) |
 
-   Unset `MYCROFT_PROXY_URL` to call Mycroft directly (e.g. if Railway static IPs
-   are ever enabled instead).
+   `MYCROFT_PROXY_SECRET` / `MYCROFT_PROXY_CA` are only for a self-hosted
+   `ops/mycroft-egress-proxy` with a self-signed certificate. Unset
+   `MYCROFT_PROXY_URL` to call Mycroft directly. Proxy 407 (wrong/old URL) pauses
+   all glasses calls for 10 min and logs `[mycroft] ALERT`; 429 → wait 60 s;
+   502/503 → retry in 5 s.
 2. **Mycroft admin issues one token per wearer** (admin portal → People → Edit →
-   Glasses → Issue token, with the egress proxy's IP as the relay address). Tokens start `mcg_`, last 90 days.
+   Glasses → Issue token, relay address `43.205.60.23`). Tokens start `mcg_`, last 90 days.
    Receive them through a password manager, not email or chat.
 3. **Generate a relay key per wearer** (any long random string, ≥24 chars), e.g.
    `node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))"`

@@ -54,19 +54,37 @@ const AUTH_HOLD_MS = clampInt(process.env.MYCROFT_AUTH_HOLD_MS, 10 * 60 * 1000, 
 // (ops/mycroft-egress-proxy). The TLS session to Mycroft runs INSIDE the tunnel,
 // so the proxy never sees the token, the question or the answer.
 //
-//   MYCROFT_PROXY_URL     https://<fixed-ip>:8443   (unset → connect directly)
-//   MYCROFT_PROXY_SECRET  shared secret, sent as Proxy-Authorization: Bearer …
-//   MYCROFT_PROXY_CA      the proxy's self-signed certificate (PEM; literal "\n"
-//                         sequences are accepted so it fits one env-var line)
+//   MYCROFT_PROXY_URL     https://user:pass@host:8443  — the Mycroft admin's proxy
+//                         (username/password → Proxy-Authorization: Basic), or
+//                         https://<ip>:8443 with MYCROFT_PROXY_SECRET for our own
+//                         ops/mycroft-egress-proxy. Unset → connect directly.
+//                         It contains a secret: never log or print it.
+//   MYCROFT_PROXY_SECRET  optional shared secret, sent as Proxy-Authorization: Bearer
+//   MYCROFT_PROXY_CA      optional pinned certificate (PEM; literal "\n" accepted)
+//                         for a self-signed proxy. A publicly trusted proxy needs none.
+//
+// Proxy replies to CONNECT (admin guide): 407 wrong/old URL → stop + alert (20
+// wrong tries in 15 min block the relay's address for EVERY wearer); 429 → wait a
+// minute; 502/503 → retry shortly. The proxy allows 10 new connections a minute
+// and closes idle ones after 2 minutes, so one keep-alive agent is reused.
 const PROXY_URL = (process.env.MYCROFT_PROXY_URL || '').trim();
 const PROXY_SECRET = (process.env.MYCROFT_PROXY_SECRET || '').trim();
 const PROXY_CA = (process.env.MYCROFT_PROXY_CA || '').replace(/\\n/g, '\n').trim();
 let proxyAgent = null;
+let proxyAuthHeld = 0; // epoch ms until which a 407 pauses ALL Mycroft calls
 
 function makeProxyAgent() {
   const p = new URL(PROXY_URL);
   if (p.protocol !== 'https:') throw new Error('MYCROFT_PROXY_URL must be https://');
-  if (!PROXY_SECRET) throw new Error('MYCROFT_PROXY_SECRET is required with MYCROFT_PROXY_URL');
+  let proxyAuth;
+  if (p.username) {
+    const creds = `${decodeURIComponent(p.username)}:${decodeURIComponent(p.password)}`;
+    proxyAuth = `Basic ${Buffer.from(creds, 'utf8').toString('base64')}`;
+  } else if (PROXY_SECRET) {
+    proxyAuth = `Bearer ${PROXY_SECRET}`;
+  } else {
+    throw new Error('MYCROFT_PROXY_URL needs user:password@ or MYCROFT_PROXY_SECRET');
+  }
   const proxyHost = p.hostname.replace(/^\[|\]$/g, '');
   const proxyPort = parseInt(p.port || '443', 10);
   const agent = new https.Agent({ keepAlive: true, maxSockets: 16 });
@@ -93,7 +111,7 @@ function makeProxyAgent() {
       proxySock.write(
         `CONNECT ${targetHost}:${targetPort} HTTP/1.1\r\n` +
         `Host: ${targetHost}:${targetPort}\r\n` +
-        `Proxy-Authorization: Bearer ${PROXY_SECRET}\r\n\r\n`
+        `Proxy-Authorization: ${proxyAuth}\r\n\r\n`
       );
     });
     const onData = (chunk) => {
@@ -286,7 +304,7 @@ async function askOnce(wearer, message) {
     return { status: 'success', final: true, text: '' };
   }
 
-  const held = authHeldUntil.get(wid) || 0;
+  const held = Math.max(authHeldUntil.get(wid) || 0, proxyAuthHeld);
   if (held > Date.now()) {
     logEvent({ kind: 'ask', wearer: wid, status: 'auth', held: true });
     return { status: 'auth', final: true, text: '' };
@@ -352,7 +370,21 @@ async function askOnce(wearer, message) {
     return { status: 'success', final, text };
   } catch (err) {
     const aborted = err && err.name === 'AbortError';
-    logEvent({ kind: 'ask', wearer: wid, status: aborted ? 'timeout' : 'error', ms: Date.now() - t0, err: aborted ? '' : String((err && (err.code || err.name)) || 'fetch') });
+    const code = String((err && err.code) || '');
+    // Proxy-level refusals (never include the proxy URL — it holds a secret).
+    if (code === 'PROXY_407') {
+      if (AUTH_HOLD_MS > 0) proxyAuthHeld = Date.now() + AUTH_HOLD_MS;
+      console.error(`[mycroft] ALERT the Mycroft proxy rejected MYCROFT_PROXY_URL (407) — all glasses calls paused ${Math.round(AUTH_HOLD_MS / 60000)} min; check the variable`);
+      logEvent({ kind: 'ask', wearer: wid, status: 'auth', proxy: 407, ms: Date.now() - t0 });
+      return { status: 'auth', final: true, text: '' };
+    }
+    if (code === 'PROXY_429' || code === 'PROXY_502' || code === 'PROXY_503') {
+      const retryAfter = code === 'PROXY_429' ? 60 : 5;
+      logEvent({ kind: 'ask', wearer: wid, status: 'retry', proxy: parseInt(code.slice(6), 10), retryAfter, ms: Date.now() - t0 });
+      return { status: 'retry', final: false, text: '', retryAfter };
+    }
+    if (code === 'PROXY_403') console.error('[mycroft] ALERT the Mycroft proxy refused the destination (403) — check MYCROFT_TEXT_INPUT_URL');
+    logEvent({ kind: 'ask', wearer: wid, status: aborted ? 'timeout' : 'error', ms: Date.now() - t0, err: aborted ? '' : String(code || (err && err.name) || 'fetch') });
     return aborted
       ? { status: 'timeout', final: true, text: '' }
       : { status: 'error', final: false, text: '' };
@@ -367,6 +399,7 @@ function _reset(env) {
   WEARERS = loadWearers(env || process.env);
   inFlight.clear();
   authHeldUntil.clear();
+  proxyAuthHeld = 0;
   LOG.length = 0;
 }
 

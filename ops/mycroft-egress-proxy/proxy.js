@@ -49,10 +49,21 @@ const [allowedHost, allowedPortStr] = ALLOWED.split(':');
 const allowedPort = parseInt(allowedPortStr || '443', 10);
 const secretHash = crypto.createHash('sha256').update(SECRET).digest();
 
+// Accepts `Bearer <secret>` or standard `Basic base64(<any user>:<secret>)`, so a
+// relay can also use https://user:<secret>@host:8443 as its proxy URL.
 function authOk(header) {
-  const m = /^Bearer\s+(.+)$/i.exec(String(header || '').trim());
-  if (!m) return false;
-  const h = crypto.createHash('sha256').update(m[1].trim()).digest();
+  const v = String(header || '').trim();
+  let presented = null;
+  let m = /^Bearer\s+(.+)$/i.exec(v);
+  if (m) presented = m[1].trim();
+  m = /^Basic\s+(.+)$/i.exec(v);
+  if (m) {
+    const decoded = Buffer.from(m[1].trim(), 'base64').toString('utf8');
+    const i = decoded.indexOf(':');
+    if (i >= 0) presented = decoded.slice(i + 1);
+  }
+  if (presented == null) return false;
+  const h = crypto.createHash('sha256').update(presented).digest();
   return crypto.timingSafeEqual(h, secretHash);
 }
 
