@@ -26,7 +26,7 @@ function sttConfig() {
   const orKey = openRouterKey();
   if (orKey) {
     return {
-      url: 'https://openrouter.ai/api/v1/audio/transcriptions',
+      url: (process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/$/, '') + '/audio/transcriptions',
       key: orKey,
       model: process.env.OPENROUTER_WHISPER_MODEL || 'openai/whisper-large-v3',
       provider: 'openrouter',
