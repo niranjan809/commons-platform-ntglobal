@@ -9,6 +9,8 @@ const multer = require('multer');
 const notes = require('./notes');
 const mycroft = require('./mycroft');
 const g2news = require('./news');
+const ceoBrief = require('./brief');
+const cueAgent = require('./cue');
 const crypto = require('crypto');
 
 const app = express();
@@ -815,8 +817,65 @@ app.post('/api/news/refresh', async (req, res) => {
   res.json(await g2news.refresh());
 });
 
+// ── CEO brief + live meeting cues for the G2 glasses ─────────────────────────
+// See brief.js and cue.js. The glasses use the wearer key; the review console
+// (/ops-console.html) uses OPS_CONSOLE_KEY (≥16 chars) in the X-Ops-Key header.
+app.get('/api/mycroft/brief', requireWearer, (req, res) => {
+  res.json(ceoBrief.forGlasses());
+});
+
+app.post('/api/mycroft/cue/segment', requireWearer, (req, res) => {
+  const text = req.body && typeof req.body.text === 'string' ? req.body.text : '';
+  res.json(cueAgent.addSegment(req.wearer, text));
+});
+app.get('/api/mycroft/cue/next', requireWearer, (req, res) => {
+  res.json({ cue: cueAgent.next(req.wearer.id) });
+});
+app.post('/api/mycroft/cue/feedback', requireWearer, (req, res) => {
+  const b = req.body || {};
+  res.json({ ok: cueAgent.feedback(req.wearer.id, String(b.id || ''), !!b.useful) });
+});
+app.post('/api/mycroft/cue/stop', requireWearer, (req, res) => {
+  cueAgent.stop(req.wearer.id);
+  res.json({ ok: true });
+});
+
+function requireOps(req, res, next) {
+  const want = process.env.OPS_CONSOLE_KEY || '';
+  const got = req.get('X-Ops-Key') || '';
+  const ok = want.length >= 16 && got.length === want.length &&
+    crypto.timingSafeEqual(Buffer.from(got), Buffer.from(want));
+  if (!ok) return res.status(403).json({ error: 'forbidden' });
+  next();
+}
+app.get('/api/ops/brief', requireOps, (req, res) => {
+  res.json({ draft: ceoBrief.getDraft(), published: ceoBrief.getPublished() });
+});
+app.post('/api/ops/brief', requireOps, (req, res) => {
+  const b = req.body || {};
+  const out = ceoBrief.review(String(b.action || ''), b);
+  res.status(out.ok ? 200 : 400).json(out);
+});
+app.post('/api/ops/brief/rebuild', requireOps, async (req, res) => {
+  try {
+    await ceoBrief.build('rebuilt on console');
+    res.json({ draft: ceoBrief.getDraft(), published: ceoBrief.getPublished() });
+  } catch (e) {
+    res.status(500).json({ error: 'build failed' });
+  }
+});
+app.get('/api/ops/cues', requireOps, (req, res) => {
+  res.json({ cues: cueAgent.listForConsole() });
+});
+app.post('/api/ops/cues', requireOps, (req, res) => {
+  const b = req.body || {};
+  const out = cueAgent.decide(String(b.id || ''), String(b.action || ''), b.text);
+  res.status(out.ok ? 200 : 400).json(out);
+});
+
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log('Commons Platform running at http://localhost:' + PORT);
   g2news.start(); // begin the daily news refresh schedule
+  ceoBrief.start(); // first CEO brief after boot, then BRIEF_TIMES (Dubai)
 });

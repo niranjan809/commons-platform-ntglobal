@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Glasses Review Console</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#16181d; --muted:#5d6470; --line:#dde1e7; --accent:#0b6bcb; --bad:#b42318; --ok:#067647; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; background:var(--bg); color:var(--ink); }
+  header { padding:14px 16px; background:var(--card); border-bottom:1px solid var(--line); display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  header h1 { font-size:17px; margin:0; flex:1; }
+  main { max-width:980px; margin:0 auto; padding:16px; display:grid; gap:16px; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; }
+  h2 { font-size:16px; margin:0 0 4px; }
+  .sub { color:var(--muted); font-size:13px; margin:0 0 12px; }
+  .item { border:1px solid var(--line); border-radius:8px; padding:10px 12px; margin:8px 0; }
+  .item .t { font-weight:600; }
+  .item .d, .item .s { color:var(--muted); font-size:13px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+  button { font:inherit; font-size:13px; padding:6px 10px; border-radius:6px; border:1px solid var(--line); background:#fff; cursor:pointer; }
+  button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  button.danger { color:var(--bad); }
+  input, textarea { font:inherit; font-size:14px; padding:6px 8px; border:1px solid var(--line); border-radius:6px; width:100%; }
+  .pill { display:inline-block; font-size:12px; padding:1px 8px; border-radius:99px; background:#eef2f7; color:var(--muted); margin-left:6px; }
+  .pill.pending { background:#fff4e5; color:#93370d; } .pill.approved, .pill.delivered { background:#ecfdf3; color:var(--ok); }
+  .err { color:var(--bad); font-size:13px; }
+  .muted { color:var(--muted); }
+  details summary { cursor:pointer; color:var(--muted); font-size:13px; margin-top:8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Glasses review console</h1>
+  <input id="key" type="password" placeholder="Console key" style="max-width:260px" autocomplete="off">
+  <button id="save">Use key</button>
+  <span id="status" class="muted"></span>
+</header>
+<main>
+  <section>
+    <h2>CEO brief</h2>
+    <p class="sub">Drafts are built at the scheduled times and go live after the review window. Approving publishes now, tagged "reviewed".</p>
+    <div id="brief"></div>
+    <div class="row">
+      <button id="rebuild">Rebuild draft now</button>
+    </div>
+    <div class="row" style="align-items:flex-end">
+      <div style="flex:2;min-width:220px"><input id="decTitle" placeholder="Decision needed today (title)"></div>
+      <div style="flex:3;min-width:220px"><input id="decDetail" placeholder="Context (optional)"></div>
+      <button id="addDec">Add decision</button>
+    </div>
+  </section>
+  <section>
+    <h2>Meeting cues</h2>
+    <p class="sub">Cues wait here until approved. The source shown is what the cue was checked against. Edited cues must keep the source's numbers.</p>
+    <div id="cues"></div>
+  </section>
+</main>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  let key = '';
+  try { key = sessionStorage.getItem('opsKey') || ''; } catch {}
+  $('key').value = key;
+  $('save').onclick = () => { key = $('key').value.trim(); try { sessionStorage.setItem('opsKey', key); } catch {} refresh(); };
+
+  async function api(path, body) {
+    const r = await fetch(path, {
+      method: body ? 'POST' : 'GET',
+      headers: Object.assign({ 'X-Ops-Key': key }, body ? { 'Content-Type': 'application/json' } : {}),
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    return j;
+  }
+  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+  const btn = (label, fn, cls) => { const b = el('button', cls, label); b.onclick = async () => { try { await fn(); } catch (e) { $('status').textContent = e.message; } refresh(); }; return b; };
+  const when = (ms) => new Date(ms).toLocaleString('en-GB', { timeZone: 'Asia/Dubai', hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' }) + ' Dubai';
+
+  function briefItem(it, editable, inMore) {
+    const box = el('div', 'item');
+    box.append(el('div', 't', it.title), el('div', 'd', it.detail || ''), el('div', 's', it.source || ''));
+    if (editable) {
+      const row = el('div', 'row');
+      row.append(btn('Drop', () => api('/api/ops/brief', { action: 'drop', id: it.id }), 'danger'));
+      row.append(btn('Edit', async () => {
+        const title = prompt('Title', it.title); if (title == null) return;
+        const detail = prompt('Detail', it.detail || ''); if (detail == null) return;
+        await api('/api/ops/brief', { action: 'edit', id: it.id, title, detail });
+      }));
+      if (inMore) row.append(btn('Move to top items', () => api('/api/ops/brief', { action: 'promote', id: it.id })));
+      box.append(row);
+    }
+    return box;
+  }
+
+  function renderBrief({ draft, published }) {
+    const root = $('brief'); root.replaceChildren();
+    if (draft) {
+      root.append(el('h3', null, `Draft · built ${when(draft.builtAt)} · goes live ${when(draft.publishAt)}`));
+      for (const e of draft.errors || []) root.append(el('div', 'err', e));
+      if (!draft.items.length) root.append(el('p', 'muted', 'No critical items in this build.'));
+      for (const it of draft.items) root.append(briefItem(it, true, false));
+      if (draft.more.length) {
+        const d = el('details'); d.append(el('summary', null, `More (${draft.more.length}) — not shown unless moved up`));
+        for (const it of draft.more) d.append(briefItem(it, true, true));
+        root.append(d);
+      }
+      const row = el('div', 'row'); row.append(btn('Approve and publish now', () => api('/api/ops/brief', { action: 'approve' }), 'primary')); root.append(row);
+    } else {
+      root.append(el('p', 'muted', 'No draft waiting.'));
+    }
+    if (published) {
+      const d = el('details'); d.append(el('summary', null, `Live on the glasses: ${published.status}, published ${when(published.publishedAt)}`));
+      for (const it of published.items) d.append(briefItem(it, false));
+      root.append(d);
+    }
+  }
+
+  function renderCues({ cues }) {
+    const root = $('cues'); root.replaceChildren();
+    if (!cues.length) { root.append(el('p', 'muted', 'No cues yet. They appear while a wearer has meeting notes running.')); return; }
+    for (const c of cues) {
+      const box = el('div', 'item');
+      const t = el('div', 't', c.text); t.append(el('span', 'pill ' + c.status, c.status)); if (c.feedback) t.append(el('span', 'pill', c.feedback));
+      box.append(t, el('div', 'd', `[${c.tag}] topic: ${c.topic} · ${c.wearer} · ${when(c.createdAt)}`));
+      const src = el('details'); src.append(el('summary', null, 'Source'), el('div', 'd', c.source)); box.append(src);
+      if (c.status === 'pending') {
+        const row = el('div', 'row');
+        row.append(btn('Approve', () => api('/api/ops/cues', { id: c.id, action: 'approve' }), 'primary'));
+        row.append(btn('Edit and approve', async () => { const text = prompt('Cue (≤90 characters)', c.text); if (text == null) return; await api('/api/ops/cues', { id: c.id, action: 'approve', text }); }));
+        row.append(btn('Reject', () => api('/api/ops/cues', { id: c.id, action: 'reject' }), 'danger'));
+        box.append(row);
+      }
+      root.append(box);
+    }
+  }
+
+  $('rebuild').onclick = async () => { $('status').textContent = 'Building… (about a minute)'; try { renderBrief(await api('/api/ops/brief/rebuild', {})); $('status').textContent = ''; } catch (e) { $('status').textContent = e.message; } };
+  $('addDec').onclick = async () => { try { await api('/api/ops/brief', { action: 'decision', title: $('decTitle').value, detail: $('decDetail').value }); $('decTitle').value = ''; $('decDetail').value = ''; } catch (e) { $('status').textContent = e.message; } refresh(); };
+
+  async function refresh() {
+    if (!key) { $('status').textContent = 'Enter the console key.'; return; }
+    try {
+      const [b, c] = await Promise.all([api('/api/ops/brief'), api('/api/ops/cues')]);
+      renderBrief(b); renderCues(c); $('status').textContent = 'Updated ' + new Date().toLocaleTimeString();
+    } catch (e) { $('status').textContent = e.message === 'forbidden' ? 'Wrong key.' : e.message; }
+  }
+  refresh();
+  setInterval(refresh, 5000);
+})();
+</script>
+</body>
+</html>

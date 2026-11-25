@@ -394,6 +394,30 @@ async function askOnce(wearer, message) {
   }
 }
 
+// A configured wearer by id (e.g. MYCROFT_BRIEF_WEARER, MYCROFT_CUE_WEARER).
+function wearerById(id) {
+  const want = String(id || '').trim();
+  return want ? WEARERS.find((w) => w.id === want) || null : null;
+}
+
+// Server-side ask that waits past filler turns, for background jobs (CEO brief,
+// meeting cues). Every re-ask shows in that wearer's Mycroft chat, so polls are
+// capped low; auth and Mycroft timeouts stop at once (never loop a bad token).
+async function askFinal(wearer, message, { maxPolls = 4, delayMs = 3000 } = {}) {
+  if (!wearer) return { status: 'auth', text: '' };
+  let last = { status: 'error', text: '' };
+  for (let i = 0; i < maxPolls; i++) {
+    const r = await askOnce(wearer, message);
+    last = r;
+    if (r.status === 'success' && r.final && r.text) return { status: 'success', text: r.text };
+    if (r.status === 'auth' || r.status === 'timeout') return { status: r.status, text: '' };
+    if (i === maxPolls - 1) break;
+    const wait = r.retryAfter ? r.retryAfter * 1000 : delayMs;
+    await new Promise((res) => setTimeout(res, Math.max(wait, delayMs)));
+  }
+  return { status: last.status === 'success' ? 'filler' : last.status, text: '' };
+}
+
 // Test hook: reload wearers / clear state after changing process.env.
 function _reset(env) {
   WEARERS = loadWearers(env || process.env);
@@ -404,6 +428,6 @@ function _reset(env) {
 }
 
 module.exports = {
-  askOnce, wearerForKey, newsWearer, looksLikeFiller, isApproval,
+  askOnce, askFinal, wearerForKey, wearerById, newsWearer, looksLikeFiller, isApproval,
   logEvent, getLog, _reset,
 };
