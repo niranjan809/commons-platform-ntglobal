@@ -112,7 +112,7 @@ function dtcNewsItems() {
     id: newId(),
     kind: 'news',
     title: `DTC news: ${i.title}`.slice(0, 90),
-    detail: i.title,
+    detail: i.title.length > 80 ? i.title : 'New on the DTC Media Zone.',
     source: 'dubaitaxi.ae',
     url: i.url,
   }));
@@ -195,8 +195,11 @@ async function build(label = 'manual') {
     if (kpi.error) errors.push(`${kpi.error} ${hhmm}`);
     if (ext === null) errors.push(`market and regulator news unavailable ${hhmm}`);
     const k = kpiItems(kpi.rows, c.threshold);
+    // At most 2 DTC posts count as critical (after a restart every post is
+    // "new"); the rest go to "more".
     const news = dtcNewsItems();
-    const critical = [...manual.splice(0), ...k.critical, ...(ext || []), ...news];
+    const critical = [...manual.splice(0), ...k.critical, ...(ext || []), ...news.slice(0, 2)];
+    k.more.unshift(...news.slice(2));
     draft = {
       id: newId(),
       label,
