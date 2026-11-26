@@ -1,16 +1,17 @@
-// cue.js — live meeting cues for the G2 glasses ("topic cue agent").
+// cue.js — live topic cues for the G2 glasses ("topic cue agent").
 //
-// While a wearer has meeting notes running, the app sends each transcribed
-// segment here. Every CUE_INTERVAL_MS the relay:
+// While a wearer has Topic Cues switched on (its own mode in the app since
+// v0.9.5 — not part of meeting notes), the app sends each transcribed segment
+// here. Every CUE_INTERVAL_MS the relay:
 //   1. spots the topic in the last 2 minutes (model; no answer is written here),
 //   2. asks DTC's own data first (Mycroft, as MYCROFT_CUE_WEARER or the wearer),
 //   3. searches the web ONLY if Mycroft has nothing — keywords only, allow-listed
 //      sources only, nothing from the transcript or internal figures leaves,
 //   4. drafts a ≤90-character cue from those sources and checks every claim and
 //      number against them (grounding.js). Anything unsupported → no cue.
-//   5. CUE_MODE=assisted (default): the cue waits on the ops console for a
-//      person to approve it. CUE_MODE=auto: cues from DTC data go straight out;
-//      web cues still need approval.
+//   5. CUE_MODE=auto (default): a cue that passed every check goes straight to
+//      the glasses — no person in the loop. CUE_MODE=assisted: each cue waits
+//      on the ops console for approval first.
 // The transcript lives in memory only, for the meeting, and is never logged.
 const crypto = require('crypto');
 const mycroft = require('./mycroft');
@@ -23,9 +24,9 @@ const STALE_MS = 3 * 60 * 1000; // an approved cue older than this is no longer 
 const TOPIC_REPEAT_MS = 5 * 60 * 1000;
 
 const cfg = () => ({
-  intervalMs: Math.max(5000, parseInt(process.env.CUE_INTERVAL_MS || '45000', 10)),
-  mycroftGapMs: Math.max(0, parseInt(process.env.CUE_MYCROFT_GAP_MS || '60000', 10)),
-  mode: process.env.CUE_MODE === 'auto' ? 'auto' : 'assisted',
+  intervalMs: Math.max(5000, parseInt(process.env.CUE_INTERVAL_MS || '30000', 10)),
+  mycroftGapMs: Math.max(0, parseInt(process.env.CUE_MYCROFT_GAP_MS || '45000', 10)),
+  mode: process.env.CUE_MODE === 'assisted' ? 'assisted' : 'auto',
 });
 
 const sessions = new Map(); // wearerId -> session
@@ -171,7 +172,7 @@ async function analyse(wearer, s) {
     mycroft.logEvent({ kind: 'cue', wearer: wearer.id, status: 'rejected_by_check' });
     return;
   }
-  const auto = cfg().mode === 'auto' && origin === 'internal';
+  const auto = cfg().mode === 'auto'; // already grounded + verified above
   cues.push({
     id: newId(),
     wearer: wearer.id,

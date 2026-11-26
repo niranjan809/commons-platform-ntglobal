@@ -84,7 +84,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const rows = brief._t.parseKpiLines('Metric | yesterday | last week\n1. Trips | 412k | 400k\nRevenue | n/a | n/a');
   assert.equal(rows.length, 1); assert.equal(rows[0].now, 412000);
   assert.equal(brief._t.addMin('23:50', 30), '00:20');
-  console.log('PASS unit: numbers, allow-list, KPI parsing');
+  const hl = brief._t.parseHighlights('Here are the points:\n1. Trips 412k yesterday\n- **Complaints up to 312**\nok\n4. Fourth line\n5. Fifth');
+  assert.deepEqual(hl, ['Trips 412k yesterday', 'Complaints up to 312', 'Fourth line']);
+  assert.deepEqual(brief._t.parseHighlights('NO_DATA'), []);
+  console.log('PASS unit: numbers, allow-list, KPI parsing, Mycroft highlights');
 
   await new Promise((r) => mycroft.listen(0, r));
   await new Promise((r) => openrouter.listen(0, r));
@@ -100,7 +103,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     OPS_CONSOLE_KEY: OPS_KEY,
     OPENROUTER_API_KEY: 'sk-or-test', OPENROUTER_BASE_URL: `http://127.0.0.1:${openrouter.address().port}`,
     NEWS_REFRESH_MS: '999999999', BRIEF_BOOT_DELAY_MS: '999999999',
-    BRIEF_REVIEW_MIN: '30', CUE_INTERVAL_MS: '5000', CUE_MYCROFT_GAP_MS: '0', CUE_MODE: 'assisted',
+    BRIEF_REVIEW_MIN: '30', BRIEF_KPIS: 'Trips,Customer complaints,Safety incidents,Revenue',
+    CUE_INTERVAL_MS: '5000', CUE_MYCROFT_GAP_MS: '0', CUE_MODE: 'assisted',
   });
   const srv = spawn(process.execPath, ['server.js'], { cwd: repo, env, stdio: ['ignore', 'pipe', 'pipe'] });
   let out = ''; srv.stdout.on('data', (d) => (out += d)); srv.stderr.on('data', (d) => (out += d));
