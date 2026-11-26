@@ -59,10 +59,23 @@ longer works.
 Tokens expire after 90 days. When the admin issues a new one, replace
 `MYCROFT_TOKEN_<ID>` on Railway within a day, then tell the admin to revoke the old one.
 
-## CEO brief and meeting cues (Nov 2026)
+## CEO brief and topic cues (Nov 2026)
 
-Both run on the relay and are reviewed on **`/ops-console.html`**. Open it and
-enter `OPS_CONSOLE_KEY` (the key is kept only for that browser tab).
+Both run on the relay without anyone in the loop by default (app v0.9.5+):
+
+- **CEO brief** is pre-built on a schedule and after every restart, then
+  published at once. The glasses fetch it ahead of time and keep a copy, so
+  "brief me" opens instantly. A build where every source failed never replaces
+  a brief that had content.
+- **Topic cues** are their own mode on the glasses ("start topic cues" or Menu →
+  Topic cues), separate from meeting notes. Cues that pass every check go
+  straight to the glasses. They use the wearer's own Mycroft token unless
+  `MYCROFT_CUE_WEARER` is set.
+
+**`/ops-console.html`** (enter `OPS_CONSOLE_KEY`, kept only for that browser
+tab) is optional: it shows what was built and sent, and lets the CEO's office
+add a decision, drop an item or rebuild. Set `BRIEF_REVIEW_MIN` / `CUE_MODE=assisted`
+to require approval again.
 
 ### Railway variables
 
@@ -70,14 +83,14 @@ enter `OPS_CONSOLE_KEY` (the key is kept only for that browser tab).
 |---|---|---|
 | `OPS_CONSOLE_KEY` | ≥16 chars | Required for the console. Treat it as a secret and seal it |
 | `OPENROUTER_API_KEY` | `sk-or-…` | Already set for speech-to-text; also used for topic spotting, web search and claim checks |
-| `MYCROFT_BRIEF_WEARER` | `ceo` | Whose Mycroft answers the KPI questions (default: `MYCROFT_NEWS_WEARER`) |
-| `MYCROFT_CUE_WEARER` | `cue` | A separate token for cue lookups, so they don't clash with the wearer's own questions or show in their chat. Default: the wearer |
-| `BRIEF_TIMES` | `07:00,13:00` | Build times, Dubai |
-| `BRIEF_REVIEW_MIN` | `30` | Draft → live after this; `0` = publish at once |
-| `BRIEF_THRESHOLD_PCT` | `10` | KPI change vs same day last week that makes an item critical |
-| `BRIEF_KPIS` | `Trips,Fleet on road,…` | KPIs asked of Mycroft |
-| `CUE_MODE` | `assisted` | `assisted`: every cue needs approval. `auto`: DTC-data cues go straight to the glasses; web cues still need approval |
-| `CUE_INTERVAL_MS` | `45000` | How often the topic is checked during a meeting |
+| `MYCROFT_BRIEF_WEARER` | `ceo` | Whose Mycroft answers the brief's ops question (default: `MYCROFT_NEWS_WEARER`). Its figures are only as complete as that token's data access |
+| `MYCROFT_CUE_WEARER` | `cue` | Optional separate token for cue lookups, so they don't clash with the wearer's own questions. Default: the wearer's own token |
+| `BRIEF_TIMES` | `06:30,09:00,12:00,15:00,18:00,21:00` | Build times, Dubai (plus one after each restart) |
+| `BRIEF_REVIEW_MIN` | `0` | `0` = publish at once. Above 0: held as a draft on the console for that many minutes |
+| `BRIEF_KPIS` | (unset) | Unset: Mycroft is asked for its top 3 ops highlights, stored word for word. Set (e.g. `Trips,Revenue`): those KPIs are compared with the same day last week instead |
+| `BRIEF_THRESHOLD_PCT` | `10` | With `BRIEF_KPIS`: the change that makes a KPI critical |
+| `CUE_MODE` | `auto` | `auto`: checked cues go straight to the glasses. `assisted`: every cue waits for approval on the console |
+| `CUE_INTERVAL_MS` | `30000` | How often the topic is checked while cues are on |
 | `SOURCE_ALLOWLIST` | `rta.ae,wam.ae,…` | Domains outside facts may come from (default list in `grounding.js`) |
 | `OPENROUTER_LLM_MODEL` | `anthropic/claude-haiku-5.5` | Model for topic, drafting and checks |
 
@@ -87,12 +100,14 @@ enter `OPS_CONSOLE_KEY` (the key is kept only for that browser tab).
 - A second model pass checks every claim against the sources. If anything is
   unsupported, nothing is shown.
 - Outside facts come only from allow-listed domains, through a cited page.
-- KPI figures are parsed from Mycroft's reply. "n/a" is left out, never guessed.
-- A source that fails is named in the brief ("ops data unavailable 07:00").
+- Mycroft highlights are stored exactly as Mycroft wrote them, labelled with
+  the time asked; the relay does no maths on them. KPI figures (with
+  `BRIEF_KPIS`) are parsed from Mycroft's reply; "n/a" is left out, never guessed.
+- A source that fails is named in the brief ("ops highlights unavailable 09:00").
 
 ### Privacy
 
-- Meeting transcript segments are held in memory for 2 minutes. They are
+- Topic-cue transcript segments are held in memory for 2 minutes. They are
   dropped on `/cue/stop` or after 10 idle minutes, and never logged.
 - Web searches get topic keywords only, with digits removed. They never get
   the transcript or internal figures.

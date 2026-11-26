@@ -1,20 +1,24 @@
 // brief.js — CEO "critical happenings" brief for the G2 glasses.
 //
-// Built twice a day (BRIEF_TIMES, Dubai time), held as a DRAFT for review on
-// the ops console, then published BRIEF_REVIEW_MIN minutes later — tagged
-// "reviewed" if someone approved it, "unreviewed" otherwise. The glasses read
-// the published brief from GET /api/mycroft/brief.
+// PRE-BUILT so "brief me" never waits: built on a schedule (BRIEF_TIMES, Dubai
+// time — every ~3 hours by default) and after a restart, and published at once
+// (BRIEF_REVIEW_MIN=0). The glasses fetch and cache it ahead of time and read
+// GET /api/mycroft/brief. Set BRIEF_REVIEW_MIN > 0 to hold each build as a
+// draft on the ops console first. A build that comes back with nothing (all
+// sources failed) never replaces a good brief.
 //
 // What goes in, and only if a rule fires (everything else goes to "more"):
-//   • KPIs from Mycroft (yesterday vs same day last week) — off by ≥ threshold,
-//     or any safety incident. Numbers come straight from Mycroft's reply.
+//   • Ops highlights from Mycroft — its own wording and figures, stored as
+//     given and labelled "per Mycroft" with the time asked (no maths on them).
+//   • KPIs (yesterday vs same day last week) — ONLY when BRIEF_KPIS is set:
+//     off by ≥ threshold, or any safety incident.
 //   • New posts on DTC's official Media Zone (from news.js).
 //   • Regulator / competitor news found by web search — kept only when it cites
 //     an allow-listed source and every number appears in that source.
 //   • Decisions added by the CEO's office on the console.
 // A source that fails is reported in the brief, never papered over with old data.
 //
-// Env: BRIEF_TIMES ("07:00,13:00"), BRIEF_REVIEW_MIN (30), BRIEF_THRESHOLD_PCT
+// Env: BRIEF_TIMES ("06:30,09:00,12:00,15:00,18:00,21:00"), BRIEF_REVIEW_MIN (0), BRIEF_THRESHOLD_PCT
 //      (10), BRIEF_KPIS (comma list), MYCROFT_BRIEF_WEARER (default: news wearer),
 //      BRIEF_BOOT_DELAY_MS (60000; first build after a restart), BRIEF_WEB (1).
 const axios = require('axios');
@@ -25,11 +29,10 @@ const llm = require('./llm');
 const grounding = require('./grounding');
 
 const MAX_CRITICAL = 5;
-const DEFAULT_KPIS = ['Trips', 'Fleet on road', 'Revenue', 'App bookings', 'Customer complaints', 'Safety incidents'];
 
 const cfg = () => ({
-  times: (process.env.BRIEF_TIMES || '07:00,13:00').split(',').map((s) => s.trim()).filter(Boolean),
-  reviewMin: Math.max(0, parseInt(process.env.BRIEF_REVIEW_MIN || '30', 10)),
+  times: (process.env.BRIEF_TIMES || '06:30,09:00,12:00,15:00,18:00,21:00').split(',').map((s) => s.trim()).filter(Boolean),
+  reviewMin: Math.max(0, parseInt(process.env.BRIEF_REVIEW_MIN || '0', 10)),
   threshold: Math.max(1, parseFloat(process.env.BRIEF_THRESHOLD_PCT || '10')),
   kpis: (process.env.BRIEF_KPIS || '').split(',').map((s) => s.trim()).filter(Boolean),
   web: process.env.BRIEF_WEB !== '0',
@@ -102,12 +105,48 @@ async function fetchKpis(wearer, kpis) {
   return rows.length ? { rows, error: '' } : { rows: [], error: 'ops data unavailable (no figures)' };
 }
 
-// ── DTC official news (new since the last brief) ─────────────────────────────
-const seenNews = new Set();
-function dtcNewsItems() {
+// ── Ops highlights from Mycroft (stored as given) ─────────────────────────────
+// Mycroft's own lines, kept word for word: the relay does no maths on them, so a
+// figure is exactly what Mycroft reported. Labelled with the time they were asked.
+function parseHighlights(text) {
+  const t = String(text || '').trim();
+  if (!t || /\bNO_DATA\b/i.test(t) || mycroft.looksLikeFiller(t)) return [];
+  return t
+    .split(/\r?\n/)
+    .map((l) => l.replace(/^(?:\d+[.)]\s+|[-*•]+\s*)/, '').replace(/\*\*/g, '').trim())
+    .filter((l) => l.length >= 8 && !/^(here|sure|below|these)\b/i.test(l))
+    .slice(0, 3);
+}
+
+async function fetchHighlights(wearer, hhmm) {
+  const prompt =
+    "For DTC's CEO: give the 3 most important points from yesterday's DTC operations data you can see " +
+    '(trips, revenue, fleet, bookings, complaints, safety). One point per line, under 90 characters, ' +
+    'figures exactly as in your data. Reply ONLY those lines. If you have no data, reply NO_DATA.';
+  const r = await mycroft.askFinal(wearer, prompt, { maxPolls: 6 });
+  if (r.status !== 'success') return { items: [], error: `ops highlights unavailable (${r.status})` };
+  const lines = parseHighlights(r.text);
+  if (!lines.length) return { items: [], error: 'ops highlights unavailable (no data)' };
+  return {
+    items: lines.map((l) => ({
+      id: newId(),
+      kind: 'ops',
+      title: l.slice(0, 90),
+      detail: `As reported by Mycroft at ${hhmm} (Dubai).`,
+      source: 'Mycroft',
+    })),
+    error: '',
+  };
+}
+
+// ── DTC official news (posted in the last 24 hours) ─────────────────────────
+// Kept for a day so every pre-built brief that day still carries it.
+const seenNews = new Map(); // url -> first seen (ms)
+const NEWS_KEEP_MS = 24 * 3600 * 1000;
+function dtcNewsItems(now = Date.now()) {
   const items = (g2news.get().items || []).filter((i) => i && i.detail === 'DTC official' && i.url);
-  const fresh = items.filter((i) => !seenNews.has(i.url));
-  for (const i of items) seenNews.add(i.url);
+  for (const i of items) if (!seenNews.has(i.url)) seenNews.set(i.url, now);
+  const fresh = items.filter((i) => now - seenNews.get(i.url) <= NEWS_KEEP_MS);
   return fresh.map((i) => ({
     id: newId(),
     kind: 'news',
@@ -186,19 +225,25 @@ async function build(label = 'manual') {
   const errors = [];
   try {
     const wearer = mycroft.wearerById(process.env.MYCROFT_BRIEF_WEARER) || mycroft.newsWearer();
-    const [kpi, ext] = await Promise.all([
-      wearer
-        ? fetchKpis(wearer, c.kpis.length ? c.kpis : DEFAULT_KPIS).catch(() => ({ rows: [], error: 'ops data unavailable (error)' }))
-        : Promise.resolve({ rows: [], error: 'ops data unavailable (no Mycroft wearer)' }),
+    // Mycroft: computed KPIs only when the CEO's office has named them
+    // (BRIEF_KPIS); otherwise Mycroft's own highlights, stored as given.
+    const noWearer = 'ops data unavailable (no Mycroft wearer)';
+    const opsTask = !wearer
+      ? Promise.resolve({ rows: [], items: [], error: noWearer })
+      : c.kpis.length
+        ? fetchKpis(wearer, c.kpis).then((k) => ({ ...k, items: [] }))
+        : fetchHighlights(wearer, hhmm).then((h) => ({ ...h, rows: [] }));
+    const [ops, ext] = await Promise.all([
+      opsTask.catch(() => ({ rows: [], items: [], error: 'ops data unavailable (error)' })),
       c.web && llm.available() ? externalItems(date).catch(() => null) : Promise.resolve([]),
     ]);
-    if (kpi.error) errors.push(`${kpi.error} ${hhmm}`);
+    if (ops.error) errors.push(`${ops.error} ${hhmm}`);
     if (ext === null) errors.push(`market and regulator news unavailable ${hhmm}`);
-    const k = kpiItems(kpi.rows, c.threshold);
+    const k = kpiItems(ops.rows, c.threshold);
     // At most 2 DTC posts count as critical (after a restart every post is
     // "new"); the rest go to "more".
-    const news = dtcNewsItems();
-    const critical = [...manual.splice(0), ...k.critical, ...(ext || []), ...news.slice(0, 2)];
+    const news = dtcNewsItems(now);
+    const critical = [...manual.splice(0), ...ops.items, ...k.critical, ...(ext || []), ...news.slice(0, 2)];
     k.more.unshift(...news.slice(2));
     draft = {
       id: newId(),
@@ -222,7 +267,15 @@ async function build(label = 'manual') {
 
 function publish() {
   if (!draft) return published;
-  published = { ...draft, status: draft.reviewed ? 'reviewed' : 'unreviewed', publishedAt: Date.now() };
+  // An empty build (every source failed) never replaces a brief that had content.
+  const empty = !draft.items.length && !draft.more.length;
+  if (empty && published && (published.items.length || published.more.length)) {
+    mycroft.logEvent({ kind: 'brief', status: 'kept_previous', errors: draft.errors.length });
+    draft = null;
+    return published;
+  }
+  const status = draft.reviewed ? 'reviewed' : cfg().reviewMin === 0 ? 'auto' : 'unreviewed';
+  published = { ...draft, status, publishedAt: Date.now() };
   draft = null;
   mycroft.logEvent({ kind: 'brief', status: 'published', reviewed: published.status === 'reviewed' });
   return published;
@@ -275,6 +328,7 @@ function forGlasses() {
   return {
     status: published.status,
     date: published.date,
+    builtAt: published.builtAt,
     builtHhmm: published.builtHhmm,
     items: published.items.map(strip),
     more: published.more.map(strip),
@@ -316,5 +370,5 @@ function start() {
 module.exports = {
   start, build, publish, review, forGlasses,
   getDraft: () => draft, getPublished: () => published,
-  _t: { parseKpiLines, kpiItems, parseNum, dubaiNow, addMin, reset: () => { draft = null; published = null; manual.length = 0; seenNews.clear(); slotsDone.clear(); } },
+  _t: { parseKpiLines, parseHighlights, kpiItems, parseNum, dubaiNow, addMin, reset: () => { draft = null; published = null; manual.length = 0; seenNews.clear(); slotsDone.clear(); } },
 };
